@@ -7,6 +7,12 @@ our %EXPORT_SYMS_PKG_CACHE;
 our %EXPORT_GENS_PKG_CACHE;
 our %EXPORT_TAGS_PKG_CACHE;
 
+our %EXPORT_SYMS= (
+	-parent => [ 'setup_exporter_subclass', 0 ],
+);
+
+sub _croak { require Carp; goto &Carp::croak; }
+
 sub import {
 	# Can be called as class method or instance method.
 	my $self= shift;
@@ -21,13 +27,13 @@ sub import {
 	my $export_sym= ($EXPORT_SYMS_PKG_CACHE{ref $self} ||= {});
 	my $export_gen= ($EXPORT_GENS_PKG_CACHE{ref $self} ||= {});
 	
-	for (my $i= 0; $i < @list;) {
-		my $symbol= $list[$i++];
+	for (my $i= 0; $i < @_;) {
+		my $symbol= $_[$i++];
 		my ($sigil, $name)= $symbol =~ /^([-:\$\@\%\*]?)(.*)/;
 		# If it is a tag, then recursively call import on that list
 		if ($sigil eq ':') {
 			my @tag_list= $self->enumerate_export_tag($name);
-			$self->import((ref $list[$i] eq 'HASH'? $list[$i++] : ()), @tag_list) if @tag_list; # only if the tags weren't all excluded
+			$self->import((ref $_[$i] eq 'HASH'? $_[$i++] : ()), @tag_list) if @tag_list; # only if the tags weren't all excluded
 			next;
 		}
 		# Else, it is an option or plain symbol to be exported
@@ -40,18 +46,18 @@ sub import {
 		
 		# All other types of argument check the following argument to see if it is a hashref.
 		# If so, use those options temporarily.
-		local %$self= ( %$self, %{$list[$i++]} )
-			if ref $list[$i] eq 'HASH' and ($sigil ne '-' or $ref->[1] == 0);
+		local %$self= ( %$self, %{$_[$i++]} )
+			if ref $_[$i] eq 'HASH' and ($sigil ne '-' or $ref->[1] == 0);
 		
 		# If it starts with '-', it is an option, and might consume additional args
 		if ($sigil eq '-') {
 			my ($method, $count)= @$ref;
 			if ($count eq '*') {
-				my $consumed= $self->$method(@list[$i..$#list]);
-				$consumed =~ /^[0-9]+/ or _croak("Method $method in $class must return a number of arguments consumed");
+				my $consumed= $self->$method(@_[$i..$#_]);
+				$consumed =~ /^[0-9]+/ or _croak("Method $method in ".ref($self)." must return a number of arguments consumed");
 				$i += $consumed;
 			} else {
-				$self->$method(@list[$i..($i+$count-1)]);
+				$self->$method(@_[$i..($i+$count-1)]);
 				$i += $count;
 			}
 			next;
@@ -61,11 +67,11 @@ sub import {
 		no warnings 'uninitialized';
 		my $dest= $self->{prefix}.(defined $self->{-as}? $self->{-as} : $name).$self->{suffix};
 		if (ref $into eq 'HASH') {
-			$into->{$dest}= $sym;
+			$into->{$dest}= $symbol;
 			next;
 		}
 		$dest= $into.'::'.$dest;
-		if (exists &$dest and ref $sym eq 'CODE' and \&$dest != $sym) {
+		if (exists &$dest and ref $symbol eq 'CODE' and \&$dest != $symbol) {
 			my $r= $self->{replace} || $self->{-replace};
 			if (!$r || $r eq 'carp' || $r eq 'warn') {
 				_carp("Overwriting existing sub '$dest' with sub '$name' exported by ".ref($self));
@@ -98,7 +104,7 @@ sub get_export_symbol {
 	no strict 'refs';
 	for (@$hier) {
 		if (exists ${$_.'::EXPORT_SYMS'}{$sym}) {
-			my $ref= ${$_.'::EXPORT_SYMS'}{$sym});
+			my $ref= ${$_.'::EXPORT_SYMS'}{$sym};
 			# If this is a plain method of the parent class, then possibly upgrade it to a subclassed method
 			$ref= $self->can($sym) if ref($ref) eq 'CODE' && $ref == $_->can($sym);
 			return ($EXPORT_SYMS_PKG_CACHE{$class}{$sym}= $ref);
@@ -143,7 +149,7 @@ sub register_export_tag_members {
 	my ($class, $tag_name)= (shift, shift);
 	$class= ref($class)||$class;
 	no strict 'refs';
-	push @{ ${class.'::EXPORT_TAGS'}{$tag_name} }, @_;
+	push @{ ${$class.'::EXPORT_TAGS'}{$tag_name} }, @_;
 }
 
 sub get_export_tag_members {
@@ -169,9 +175,9 @@ sub get_export_tag_members {
 		# lot more setup that probably won't pay off for the usual tiny lists of 'not'.
 		for my $filter (ref $not eq 'ARRAY'? @$not : ($not)) {
 			if (ref $filter eq 'RegExp') {
-				@$list= grep ($_ !~ $filter), @$list;
+				@$list= grep $_ !~ $filter, @$list;
 			} else {
-				@$list= grep ($_ ne $filter), @$list;
+				@$list= grep $_ ne $filter, @$list;
 			}
 		}
 	}
@@ -227,7 +233,7 @@ sub _process_export_attribute {
 				_croak("Invalid export notation '$token'");
 			}
 		}
-		if (!defined $export_name) { # if list was only tags...
+		if (!defined $export_name) { # if list was empty or only tags...
 			$export_name= _get_coderef_name($coderef);
 			$class->register_export_symbol($export_name, $coderef);
 		}
@@ -236,6 +242,16 @@ sub _process_export_attribute {
 	}
 	return;
 }
+
+sub setup_exporter_subclass {
+	my $self= shift;
+	no strict 'refs';
+	push @{$self->{into}.'::ISA'}, __PACKAGE__;
+	strict->import;
+	warnings->import;
+}
+
+1;
 
 =head1 DESCRIPTION
 
