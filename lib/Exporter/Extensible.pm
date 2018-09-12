@@ -8,7 +8,7 @@ our %EXPORT_GENS_PKG_CACHE;
 our %EXPORT_TAGS_PKG_CACHE;
 
 our %EXPORT_SYMS= (
-	-parent => [ 'setup_exporter_subclass', 0 ],
+	-exporter_setup_subclass => [ 'exporter_setup_subclass', 0 ],
 );
 
 sub _croak { require Carp; goto &Carp::croak; }
@@ -23,17 +23,26 @@ sub import {
 	
 	# Capture caller() unless 'into' was already indicated.
 	my $into= $self->{into} ||= caller;
+	# If caller wants scope option, make sure it has been blessed
+	bless $self->{scope}, 'Exporter::Extensible::UnimportScopeGuard'
+		if ref $self->{scope} eq 'SCALAR';
+	
 	# Cache some lookups
 	my $export_sym= ($EXPORT_SYMS_PKG_CACHE{ref $self} ||= {});
 	my $export_gen= ($EXPORT_GENS_PKG_CACHE{ref $self} ||= {});
 	
 	for (my $i= 0; $i < @_;) {
 		my $symbol= $_[$i++];
-		my ($sigil, $name)= $symbol =~ /^([-:\$\@\%\*]?)(.*)/;
+		my ($sigil, $name)= ($symbol =~ /^([-:\$\@\%\*]?)(.*)/); # should always match
+		# If followed by a hashref, add those options to the current ones.
+		# But, not if it is an -option, because -option might use hashrefs for other purposes.
+		local %$self= ( %$self, %{$_[$i++]} )
+			if ref $_[$i] eq 'HASH' and $sigil ne '-';
+		
 		# If it is a tag, then recursively call import on that list
 		if ($sigil eq ':') {
-			my @tag_list= $self->enumerate_export_tag($name);
-			$self->import((ref $_[$i] eq 'HASH'? $_[$i++] : ()), @tag_list) if @tag_list; # only if the tags weren't all excluded
+			my @tag_list= $self->exporter_get_tag_members($name);
+			$self->import(@tag_list) if @tag_list; # only if the tags weren't all excluded
 			next;
 		}
 		# Else, it is an option or plain symbol to be exported
@@ -41,13 +50,8 @@ sub import {
 		my $ref= (
 		    exists $export_sym->{$symbol}? $export_sym->{$symbol}
 		  : defined $export_gen->{$symbol}? $export_gen->{$symbol}->($self, $symbol)
-		  : $self->get_export_symbol($symbol)
+		  : $self->exporter_get_symbol($symbol)
 		) or _croak("'$symbol' is not exported by ".ref($self));
-		
-		# All other types of argument check the following argument to see if it is a hashref.
-		# If so, use those options temporarily.
-		local %$self= ( %$self, %{$_[$i++]} )
-			if ref $_[$i] eq 'HASH' and ($sigil ne '-' or $ref->[1] == 0);
 		
 		# If it starts with '-', it is an option, and might consume additional args
 		if ($sigil eq '-') {
@@ -81,17 +85,18 @@ sub import {
 			}
 		}
 		*$dest= $ref;
+		push @{${$self->{scope}}}, $dest if $self->{scope};
 	}
 }
 
-sub register_export_symbol {
+sub exporter_register_symbol {
 	my ($class, $export_name, $ref)= @_;
 	$class= ref($class)||$class;
 	no strict 'refs';
 	${$class.'::EXPORT_SYMS'}{$export_name}= $ref;
 }
 
-sub get_export_symbol {
+sub exporter_get_symbol {
 	my ($self, $sym)= @_;
 	my $class= ref($self)||$self;
 	# Make the common case fast.
@@ -116,43 +121,28 @@ sub get_export_symbol {
 	return undef;
 }
 
-sub register_export_option {
+sub exporter_register_option {
 	my ($class, $option_name, $method_name, $arg_count)= @_;
 	$class= ref($class)||$class;
 	no strict 'refs';
 	${$class.'::EXPORT_SYMS'}{'-'.$option_name}= [ $method_name, $arg_count||0 ];
 }
 
-sub invoke_export_option {
-	my ($self, $optname)= (shift, shift);
-	my $class= ref($self)||$self;
-	my $method_and_count= $self->get_export_symbol("-$optname")
-		or _croak("'-$optname' is not exported by $class");
-	my ($method, $count)= @$method_and_count;
-	if ($count eq '*') {
-		my $consumed= $self->$method(@_);
-		$consumed =~ /^[0-9]+/ or _croak("Method $method in $class must return a number of arguments consumed");
-		return $consumed;
-	}
-	$self->$method($count? @_[0..$count-1] : ());
-	return $count;
-}
-
-sub register_export_generator {
+sub exporter_register_generator {
 	my ($class, $export_name, $method_name)= @_;
 	$class= ref($class)||$class;
 	no strict 'refs';
 	${$class.'::EXPORT_GENS'}{$export_name}= $method_name;
 }
 
-sub register_export_tag_members {
+sub exporter_register_tag_members {
 	my ($class, $tag_name)= (shift, shift);
 	$class= ref($class)||$class;
 	no strict 'refs';
 	push @{ ${$class.'::EXPORT_TAGS'}{$tag_name} }, @_;
 }
 
-sub get_export_tag_members {
+sub exporter_get_tag_members {
 	my ($self, $tagname)= @_;
 	my $class= ref($self)||$self;
 	# Make the common case fast
@@ -193,11 +183,11 @@ sub FETCH_CODE_ATTRIBUTES {
 }
 sub MODIFY_CODE_ATTRIBUTES {
 	my ($class, $coderef)= (shift, shift);
-	my @unknown= grep !$class->_process_export_attribute($coderef, $_), @_;
+	my @unknown= grep !$class->_exporter_process_attribute($coderef, $_), @_;
 	my $super= $class->next::can;
 	return $super? $super->($class, $coderef, @unknown) : @unknown;
 }
-sub _get_coderef_name {
+sub _exporter_get_coderef_name {
 	my $coderef= shift;
 	# This code is borrowed from Sub::Identify
 	require B;
@@ -206,7 +196,7 @@ sub _get_coderef_name {
 		or _croak("Can't determine export name of $coderef");
 	return $cv->GV->NAME;
 }
-sub _process_export_attribute {
+sub _exporter_process_attribute {
 	my ($class, $coderef, $attr)= @_;
 	if ($attr =~ /^Export(\(.*?\))?$/) {
 		my (%tags, $subname, $export_name);
@@ -216,37 +206,37 @@ sub _process_export_attribute {
 				$tags{$1}++; # save tags until we have the export_name
 			}
 			elsif ($token =~ /^-(\w*)(?:\(([0-9]+|\*)\))?$/) {
-				$subname ||= _get_coderef_name($coderef);
+				$subname ||= _exporter_get_coderef_name($coderef);
 				$export_name ||= length $1? $token : "-$subname";
-				$class->register_export_option(substr($export_name,1), $subname, $2);
+				$class->exporter_register_option(substr($export_name,1), $subname, $2);
 			}
 			elsif ($token =~ /^=([\$\@\%\*]?(\w*))$/) {
-				$subname ||= _get_coderef_name($coderef);
+				$subname ||= _exporter_get_coderef_name($coderef);
 				$export_name ||= length $2? $1 : "$1$subname";
-				$class->register_export_generator($export_name, $subname);
+				$class->exporter_register_generator($export_name, $subname);
 			}
 			elsif ($token =~ /^\w+$/) {
 				$export_name ||= $token;
-				$class->register_export_symbol($token, $coderef);
+				$class->exporter_register_symbol($token, $coderef);
 			}
 			else {
 				_croak("Invalid export notation '$token'");
 			}
 		}
 		if (!defined $export_name) { # if list was empty or only tags...
-			$export_name= _get_coderef_name($coderef);
-			$class->register_export_symbol($export_name, $coderef);
+			$export_name= _exporter_get_coderef_name($coderef);
+			$class->exporter_register_symbol($export_name, $coderef);
 		}
-		$class->register_export_tag_members($_, $export_name) for keys %tags;
+		$class->exporter_register_tag_members($_, $export_name) for keys %tags;
 		return 1;
 	}
 	return;
 }
 
-sub setup_exporter_subclass {
+sub exporter_setup_subclass {
 	my $self= shift;
 	no strict 'refs';
-	push @{$self->{into}.'::ISA'}, __PACKAGE__;
+	push @{$self->{into}.'::ISA'}, ref($self);
 	strict->import;
 	warnings->import;
 }
