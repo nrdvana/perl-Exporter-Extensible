@@ -8,7 +8,25 @@ our %EXPORT_GENS_PKG_CACHE;
 our %EXPORT_TAGS_PKG_CACHE;
 
 our %EXPORT_SYMS= (
-	-exporter_setup_subclass => [ 'exporter_setup_subclass', 0 ],
+	-exporter_setup => [ 'exporter_setup', 1 ],
+);
+
+our %sigil_to_type= (
+	'$' => 'SCALAR',
+	'@' => 'ARRAY',
+	'%' => 'HASH',
+	'*' => 'GLOB',
+	'&' => 'CODE',
+	''  => 'CODE',
+	'-' => 'CODE',
+);
+our %sigil_to_generator_prefix= (
+	'$' => '_generateSCALAR_',
+	'@' => '_generateARRAY_',
+	'%' => '_generateHASH_',
+	'*' => '_generateGLOB_',
+	'&' => '_generate_',
+	''  => '_generate_',
 );
 
 sub _croak { require Carp; goto &Carp::croak; }
@@ -68,7 +86,7 @@ sub import {
 		}
 		
 		no strict 'refs';
-		no warnings 'uninitialized';
+		no warnings 'uninitialized','redefine';
 		my $dest= $self->{prefix}.(defined $self->{-as}? $self->{-as} : $name).$self->{suffix};
 		if (ref $into eq 'HASH') {
 			$into->{$dest}= $symbol;
@@ -81,17 +99,52 @@ sub import {
 				_carp("Overwriting existing sub '$dest' with sub '$name' exported by ".ref($self));
 			}
 			elsif ($r eq 'croak' || $r eq 'fatal' || $r eq 'die') {
-				_carp("Refusing to overwrite existing sub '$dest' with sub '$name' exported by ".ref($self));
+				_croak("Refusing to overwrite existing sub '$dest' with sub '$name' exported by ".ref($self));
 			}
 		}
-		*$dest= $ref;
-		push @{${$self->{scope}}}, $dest if $self->{scope};
+		$self->{un}? $self->exporter_unimport_ref($dest, $ref) : (*$dest= $ref);
+		#print "dest= ".*$dest." ref=$ref\n";
+		push @{${$self->{scope}}}, $dest, $ref if $self->{scope};
+	}
+}
+
+sub unimport {
+	# If first option is a hashref (global options), merge that with { un => 1 }
+	my %opts= ( (ref $_[1] eq 'HASH'? %{splice(@_,1,1)} : () ), un => 1 );
+	# Use this as the global options
+	splice @_, 1, 0, \%opts;
+	goto $_[0]->can('import'); # to preserve caller
+}
+
+sub import_into {
+	shift->import({ into => shift, (ref $_[0] eq 'HASH'? %{+shift} : ()) }, @_);
+}
+
+sub exporter_unimport_ref {
+	my ($self, $full_name, $ref)= @_;
+	no strict 'refs';
+	my ($stashname, $name)= ($full_name =~ /(.*:)([^:]+)$/);
+	my $stash= \%$stashname;
+	if (ref $ref eq 'GLOB') {
+		# If the value we installed is no longer there, do nothing
+		return if *$ref ne ($stash->{$name}||'');
+		delete $stash->{$name};
+	}
+	else {
+		# If the value we installed is no longer there, do nothing
+		return if $ref != (*{$full_name}{ref $ref}||0);
+		# Remove old typeglob, then copy all slots except reftype back to that typeglob name
+		my $old= delete $stash->{$name};
+		($_ ne ref $ref) && *{$old}{$_} && (*$full_name= *{$old}{$_})
+			for qw( SCALAR HASH ARRAY CODE IO );
 	}
 }
 
 sub exporter_register_symbol {
 	my ($class, $export_name, $ref)= @_;
 	$class= ref($class)||$class;
+	$ref ||= $class->_exporter_get_ref_to_package_var($export_name)
+		or _croak("Symbol $export_name not found in package $class");
 	no strict 'refs';
 	${$class.'::EXPORT_SYMS'}{$export_name}= $ref;
 }
@@ -187,6 +240,7 @@ sub MODIFY_CODE_ATTRIBUTES {
 	my $super= $class->next::can;
 	return $super? $super->($class, $coderef, @unknown) : @unknown;
 }
+
 sub _exporter_get_coderef_name {
 	my $coderef= shift;
 	# This code is borrowed from Sub::Identify
@@ -196,6 +250,16 @@ sub _exporter_get_coderef_name {
 		or _croak("Can't determine export name of $coderef");
 	return $cv->GV->NAME;
 }
+
+sub _exporter_get_ref_to_package_var {
+	my ($class, $symbol)= @_;
+	my ($sigil, $name)= ($symbol =~ /^([\$\@\%\*]?)(\w+)$/)
+		or _croak("'$symbol' is not an allowed variable name");
+	my $reftype= $sigil_to_type{$sigil};
+	no strict 'refs';
+	return $reftype eq 'GLOB'? *{$class.'::'.$name} : *{$class.'::'.$name}{$reftype};
+}
+
 sub _exporter_process_attribute {
 	my ($class, $coderef, $attr)= @_;
 	if ($attr =~ /^Export(\(.*?\))?$/) {
@@ -233,19 +297,99 @@ sub _exporter_process_attribute {
 	return;
 }
 
-sub exporter_setup_subclass {
-	my $self= shift;
+sub exporter_setup {
+	my ($self, $version)= @_;
 	no strict 'refs';
 	push @{$self->{into}.'::ISA'}, ref($self);
 	strict->import;
 	warnings->import;
+	if ($version == 1) {
+		*{$self->{into}.'::export'}= \&exporter_export;
+	}
+	elsif ($version) {
+		_croak("Unknown export API version $version");
+	}
+}
+
+sub exporter_export {
+	my $class= caller;
+	for (my $i= 0; $i < @_;) {
+		my $sym= $_[$i++];
+		ref $sym and _croak("Expected non-ref export name at argument $i");
+		my ($sigil, $name, $args)= ($sym =~ /^([-\$\@\%\*:]?)(\w+)(?:\(([0-9]+|\*)\))?$/)
+			or _croak("'$sym' is not a valid export symbol");
+		# If they provided the ref, capture it from arg list.
+		my $ref= $_[$i++] if ref $_[$i];
+		if ($sigil eq ':') {
+			ref $ref eq 'ARRAY' or _croak("Tag name '$sym' must be followed by an arrayref");
+			$class->exporter_register_tag_members($name, @$ref);
+		}
+		elsif ($sigil eq '-') {
+			$ref or $class->can($name) or _croak("Option '$sym' must be a coderef or method of $class");
+			$class->exporter_register_option($name, $ref || $name, $args);
+		}
+		elsif ($ref ||= $class->_exporter_get_ref_to_package_var($sym)) {
+			ref $ref eq $sigil_to_type{$sigil} or _croak("'$sym' should be $sigil_to_type{$sigil} but you supplied a $ref");
+			$class->exporter_register_symbol($sym, $ref);
+		}
+		else {
+			my $generator= $sigil_to_generator_prefix{$sigil}.$name;
+			$class->can($generator)
+				or _croak("Symbol $sym not found in package $class, nor a generator $generator");
+			$class->exporter_register_generator($sym, $generator);
+		}
+	}
+}
+
+package Exporter::Extensible::UnimportScopeGuard;
+
+sub DESTROY {
+	my $self= shift;
+	Exporter::Extensible->exporter_unimport_ref(splice @$self, -2)
+		while @$self;
 }
 
 1;
 
+=head1 SYNOPSIS
+
+Define a module with exports
+
+  package My::Utils;
+  use Exporter::Extensible -exporter_setup => 1;
+  
+  sub util_function : Export {
+    ...
+  }
+  sub util_fn2 : Export( foo :bar :baz :default ) {
+    ...
+  }
+  
+  our ($x, $y, $z);
+  export(qw( $x $y $z ));
+  
+  our @GLOBAL_LIST_OF_STUFF;
+  export('@STUFF' => \@GLOBAL_LIST_OF_STUFF);
+  
+  sub strict_and_warnings : Export(-) {
+    strict->import;
+    warnings->import;
+  }
+
+Derive a new module with exports from the previous one
+
+  package My::MoreUtils;
+  use My::Utils -exporter_setup => 1;
+  sub util_fn3 : Export(:baz) { ... }
+
+Use the module
+
+  use My::MoreUtils qw( -strict_and_warnings :baz @STUFF );
+  push @STUFF, util_fn2(), util_fn3();
+
 =head1 DESCRIPTION
 
-As a module author, you have lots of exporters to choose from, so I'll try to get straight to
+As a module author, you have dozens of exporters to choose from, so I'll try to get straight to
 the pros/cons of this module:
 
 =head2 Pros
@@ -254,19 +398,19 @@ the pros/cons of this module:
 
 =item Extend Your Module
 
-This module focuses on the ability and ease of letting you "subclass" a module-with-exports to
+This exporter focuses on the ability and ease of letting you "subclass" a module-with-exports to
 create a derived module-with-exports.
 
 =item Extend Behavior of C<import>
 
-This module supports lots of ways to add custom processing during 'import' without needing to
+This exporter supports lots of ways to add custom processing during 'import' without needing to
 dig into the implementation too much.
 
 =item Advanced Features
 
-This module attempts to copy useful features from other Exporters, like renaming imports per
--consumer, prefixes, suffixes, excluding symbols, importing to things other than C<caller>,
-declaring imports with an API, or with attributes, etc.
+This exporter attempts to copy useful features from other Exporters, like renaming imports
+from the C<use> line, prefixes, suffixes, excluding symbols, importing to things other than
+C<caller>, declaring imports with an API, or with method attributes, etc.
 
 =item No Non-core Dependencies
 
@@ -299,17 +443,20 @@ author.  This feature is designed to feel like command-line option processing.
 This module defines a few API methods used for the declaration and definition of the export
 process.  Exporting modules must inherit from this module, thus inheriting that API as well.
 The API I<doesn't> get exported to consumers even if they request ':all', so it's only a small
-worry for name collisions in the packages defining the exports.
+worry for name collisions within the packages defining the exports.
 
 I could have kept these meta-methods in a separate namespace, but that would defeat the goal of
 "easy to extend".
 
 If you want a pure class hierarchy for OO purposes but also export a few symbols, consider
-making a separate module for the exported symbols and then add this to your class:
+something like this:
 
     package My::Class;
-    require My::Class::Exports;
-    sub import { My::Module::Exports->import_into(scalar caller, @_) }
+    package My::Class::Exports {
+      use Exporter::Extensible -exporter_setup => 1;
+      ...
+    }
+    sub import { My::Class::Exports->import_into(scalar caller, @_) }
 
 =back
 

@@ -9,7 +9,7 @@ ok( eval q|
 	package Example;
 	$INC{'Example.pm'}=1;
 
-	use Exporter::Extensible -exporter_setup_subclass;
+	use Exporter::Extensible -exporter_setup => 0;
 	sub foo :Export {}
 	sub bar :Export {}
 |, 'declare Example' ) or diag $@;
@@ -18,7 +18,7 @@ ok( eval q|
 	package Example::Derived;
 	$INC{'Example/Derived.pm'}=1;
 
-	use Example -exporter_setup_subclass;
+	use Example -exporter_setup => 0;
 	sub foo :Export {}
 |, 'declare Example::Derived' ) or diag $@;
 
