@@ -3,11 +3,10 @@ package Exporter::Extensible;
 use strict;
 use warnings;
 
-our %EXPORT_SYMS_PKG_CACHE;
-our %EXPORT_GENS_PKG_CACHE;
+our %EXPORT_PKG_CACHE;
 our %EXPORT_TAGS_PKG_CACHE;
 
-our %EXPORT_SYMS= (
+our %EXPORT= (
 	-exporter_setup => [ 'exporter_setup', 1 ],
 );
 
@@ -46,8 +45,7 @@ sub import {
 		if ref $self->{scope} eq 'SCALAR';
 	
 	# Cache some lookups
-	my $export_sym= ($EXPORT_SYMS_PKG_CACHE{ref $self} ||= {});
-	my $export_gen= ($EXPORT_GENS_PKG_CACHE{ref $self} ||= {});
+	my $export_sym= ($EXPORT_PKG_CACHE{ref $self} ||= {});
 	
 	for (my $i= 0; $i < @_;) {
 		my $symbol= $_[$i++];
@@ -65,11 +63,14 @@ sub import {
 		}
 		# Else, it is an option or plain symbol to be exported
 		# Check current package cache first, else do the full lookup.
-		my $ref= (
-		    exists $export_sym->{$symbol}? $export_sym->{$symbol}
-		  : defined $export_gen->{$symbol}? $export_gen->{$symbol}->($self, $symbol)
-		  : $self->exporter_get_symbol($symbol)
-		) or _croak("'$symbol' is not exported by ".ref($self));
+		my $ref= (exists $export_sym->{$symbol}? $export_sym->{$symbol} : $self->exporter_get_inherited($symbol))
+			or _croak("'$symbol' is not exported by ".ref($self));
+		# Generators are a ref ref to a method name or coderef.
+		if (ref $ref eq 'REF') {
+			$ref= $$ref;
+			$ref= $$ref unless ref $ref eq 'CODE';
+			$ref= $self->$ref($symbol);
+		}
 		
 		# If it starts with '-', it is an option, and might consume additional args
 		if ($sigil eq '-') {
@@ -89,7 +90,7 @@ sub import {
 		no warnings 'uninitialized','redefine';
 		my $dest= $self->{prefix}.(defined $self->{-as}? $self->{-as} : $name).$self->{suffix};
 		if (ref $into eq 'HASH') {
-			$into->{$dest}= $symbol;
+			$into->{$dest}= $ref;
 			next;
 		}
 		$dest= $into.'::'.$dest;
@@ -146,29 +147,20 @@ sub exporter_register_symbol {
 	$ref ||= $class->_exporter_get_ref_to_package_var($export_name)
 		or _croak("Symbol $export_name not found in package $class");
 	no strict 'refs';
-	${$class.'::EXPORT_SYMS'}{$export_name}= $ref;
+	${$class.'::EXPORT'}{$export_name}= $ref;
 }
 
-sub exporter_get_symbol {
+sub exporter_get_inherited {
 	my ($self, $sym)= @_;
 	my $class= ref($self)||$self;
 	# Make the common case fast.
-	return $EXPORT_SYMS_PKG_CACHE{$class}{$sym}
-		if exists $EXPORT_SYMS_PKG_CACHE{$class}{$sym};
-	return $EXPORT_GENS_PKG_CACHE{$class}{$sym}->($self, $sym)
-		if defined $EXPORT_GENS_PKG_CACHE{$class}{$sym};
+	return $EXPORT_PKG_CACHE{$class}{$sym}
+		if exists $EXPORT_PKG_CACHE{$class}{$sym};
 	# search package hierarchy
-	my $hier= mro::get_linear_isa($class);
 	no strict 'refs';
-	for (@$hier) {
-		if (exists ${$_.'::EXPORT_SYMS'}{$sym}) {
-			my $ref= ${$_.'::EXPORT_SYMS'}{$sym};
-			# If this is a plain method of the parent class, then possibly upgrade it to a subclassed method
-			$ref= $self->can($sym) if ref($ref) eq 'CODE' && $ref == $_->can($sym);
-			return ($EXPORT_SYMS_PKG_CACHE{$class}{$sym}= $ref);
-		}
-		return ($EXPORT_GENS_PKG_CACHE{$class}{$sym}= ${$_.'::EXPORT_GENS'}{$sym})->($self, $sym)
-			if defined ${$_.'::EXPORT_GENS'}{$sym};
+	for (@{ mro::get_linear_isa($class) }) {
+		return $EXPORT_PKG_CACHE{$class}{$sym}= ${$_.'::EXPORT'}{$sym}
+			if exists ${$_.'::EXPORT'}{$sym};
 	}
 	# Isn't exported.
 	return undef;
@@ -178,14 +170,14 @@ sub exporter_register_option {
 	my ($class, $option_name, $method_name, $arg_count)= @_;
 	$class= ref($class)||$class;
 	no strict 'refs';
-	${$class.'::EXPORT_SYMS'}{'-'.$option_name}= [ $method_name, $arg_count||0 ];
+	${$class.'::EXPORT'}{'-'.$option_name}= [ $method_name, $arg_count||0 ];
 }
 
 sub exporter_register_generator {
 	my ($class, $export_name, $method_name)= @_;
 	$class= ref($class)||$class;
 	no strict 'refs';
-	${$class.'::EXPORT_GENS'}{$export_name}= $method_name;
+	${$class.'::EXPORT'}{$export_name}= \\$method_name;
 }
 
 sub exporter_register_tag_members {
@@ -201,15 +193,20 @@ sub exporter_get_tag_members {
 	# Make the common case fast
 	my $list= $EXPORT_TAGS_PKG_CACHE{$class}{$tagname};
 	if (!$list && !exists $EXPORT_TAGS_PKG_CACHE{$class}{$tagname}) {
-		# Collect all members of this tag from any parent class
-		my $hier= mro::get_linear_isa($class);
+		# Collect all members of this tag from any parent class, but stop at the first coderef
+		my $dynamic;
 		no strict 'refs';
-		my %seen;
-		for (@$hier) {
+		$list= [];
+		for (@{ mro::get_linear_isa($class) }) {
 			my $tag= ${$_.'::EXPORT_TAGS'}{$tagname} or next;
-			$seen{$_}++ for @$tag;
+			if (ref $tag ne 'ARRAY') {
+				push @$list, @{ $self->$tag };
+				++$dynamic;
+				last;
+			}
+			push @$list, @$tag;
 		}
-		$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $list= [ keys %seen ];
+		$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $list unless $dynamic;
 	}
 	# Apply "not" exclusions
 	if (ref $self && (my $not= $self->{not} || $self->{-not})) {
@@ -217,11 +214,16 @@ sub exporter_get_tag_members {
 		# N^2 exclusion iteration isn't cool, but doing something smarter requires a
 		# lot more setup that probably won't pay off for the usual tiny lists of 'not'.
 		for my $filter (ref $not eq 'ARRAY'? @$not : ($not)) {
-			if (ref $filter eq 'RegExp') {
-				@$list= grep $_ !~ $filter, @$list;
-			} else {
+			if (!ref $filter) {
 				@$list= grep $_ ne $filter, @$list;
 			}
+			elsif (ref $filter eq 'RegExp') {
+				@$list= grep $_ !~ $filter, @$list;
+			}
+			elsif (ref $filter eq 'CODE') {
+				@$list= grep !&$filter, @$list;
+			}
+			else { _croak("Unhandled 'not' filter: $filter") }
 		}
 	}
 	@$list;
@@ -269,6 +271,11 @@ sub _exporter_process_attribute {
 			if ($token =~ /^:(.*)$/) {
 				$tags{$1}++; # save tags until we have the export_name
 			}
+			elsif ($token =~ /^\w+$/) {
+				$export_name ||= $token;
+				no strict 'refs';
+				${$class.'::EXPORT'}{$token}= $coderef;
+			}
 			elsif ($token =~ /^-(\w*)(?:\(([0-9]+|\*)\))?$/) {
 				$subname ||= _exporter_get_coderef_name($coderef);
 				$export_name ||= length $1? $token : "-$subname";
@@ -279,17 +286,14 @@ sub _exporter_process_attribute {
 				$export_name ||= length $2? $1 : "$1$subname";
 				$class->exporter_register_generator($export_name, $subname);
 			}
-			elsif ($token =~ /^\w+$/) {
-				$export_name ||= $token;
-				$class->exporter_register_symbol($token, $coderef);
-			}
 			else {
 				_croak("Invalid export notation '$token'");
 			}
 		}
 		if (!defined $export_name) { # if list was empty or only tags...
 			$export_name= _exporter_get_coderef_name($coderef);
-			$class->exporter_register_symbol($export_name, $coderef);
+			no strict 'refs';
+			${$class.'::EXPORT'}{$export_name}= $coderef;
 		}
 		$class->exporter_register_tag_members($_, $export_name) for keys %tags;
 		return 1;
@@ -304,39 +308,73 @@ sub exporter_setup {
 	strict->import;
 	warnings->import;
 	if ($version == 1) {
-		*{$self->{into}.'::export'}= \&exporter_export;
+		*{$self->{into}.'::export'}= \&_exporter_export_from_caller;
 	}
 	elsif ($version) {
 		_croak("Unknown export API version $version");
 	}
 }
 
+sub _exporter_export_from_caller {
+	unshift @_, scalar caller;
+	goto $_[0]->can('exporter_export');
+}
 sub exporter_export {
-	my $class= caller;
+	my $class= shift;
 	for (my $i= 0; $i < @_;) {
-		my $sym= $_[$i++];
-		ref $sym and _croak("Expected non-ref export name at argument $i");
-		my ($sigil, $name, $args)= ($sym =~ /^([-\$\@\%\*:]?)(\w+)(?:\(([0-9]+|\*)\))?$/)
-			or _croak("'$sym' is not a valid export symbol");
+		my $export= $_[$i++];
+		ref $export and _croak("Expected non-ref export name at argument $i");
 		# If they provided the ref, capture it from arg list.
 		my $ref= $_[$i++] if ref $_[$i];
-		if ($sigil eq ':') {
-			ref $ref eq 'ARRAY' or _croak("Tag name '$sym' must be followed by an arrayref");
+		my ($is_gen, $sigil, $name, $args);
+		# Common case first - ordinary functions
+		if ($export =~ /^\w+$/) {
+			$ref ||= $class->can($export) or _croak("Export '$export' not found in $class");
+			no strict 'refs';
+			${$class.'::EXPORT'}{$export}= $ref;
+		}
+		# Next, check for generators or variables with sigils
+		elsif (($is_gen, $sigil, $name)= ($export =~ /^(=?)([\$\@\%\*]?)(\w+)$/)) {
+			$ref ||= $class->_exporter_get_ref_to_package_var($export)
+				unless $is_gen;
+			if (!$ref) {
+				my $gen= $sigil_to_generator_prefix{$sigil}.$name;
+				$class->can($gen)
+					or _croak("Export '$export' not found in package $class, nor a generator $gen");
+				$ref= \\$gen;  # REF REF to method name
+			}
+			elsif ($is_gen) {
+				ref $ref eq 'CODE' or _croak("Export '$export' should be followed by a generator coderef");
+				my $coderef= $ref;
+				$ref= \$coderef; # REF to coderef
+			}
+			else {
+				ref $ref eq $sigil_to_type{$sigil}
+					or _croak("'$export' should be $sigil_to_type{$sigil} but you supplied ".ref($ref));
+			}
+			no strict 'refs';
+			${$class.'::EXPORT'}{$sigil.$name}= $ref;
+		}
+		# Tags ":foo"
+		elsif (($is_gen, $name)= ($export =~ /^(=?):(\w+)$/)) {
+			defined $is_gen and _croak("Tags can't be generators (yet) for $export");
+			ref $ref eq 'ARRAY' or _croak("Tag name '$export' must be followed by an arrayref");
 			$class->exporter_register_tag_members($name, @$ref);
 		}
-		elsif ($sigil eq '-') {
-			$ref or $class->can($name) or _croak("Option '$sym' must be a coderef or method of $class");
-			$class->exporter_register_option($name, $ref || $name, $args);
-		}
-		elsif ($ref ||= $class->_exporter_get_ref_to_package_var($sym)) {
-			ref $ref eq $sigil_to_type{$sigil} or _croak("'$sym' should be $sigil_to_type{$sigil} but you supplied a $ref");
-			$class->exporter_register_symbol($sym, $ref);
+		# Options "-foo" or "-foo(3)"
+		elsif (($name, $args)= ($export =~ /^-(\w+)(?:\(([0-9]+|\*)\))?$/)) {
+			if ($ref) {
+				ref $ref eq 'CODE' or (ref $ref eq 'SCALAR' and $class->can($ref= $$ref))
+					or _croak("Option '$export' must be followed by coderef or method name as scalar ref");
+			} else {
+				$class->can($name)
+					or _croak("Option '$export' defaults to a method '$name' which does not exist on $class");
+				$ref= $name;
+			}
+			$class->exporter_register_option($name, $ref, $args);
 		}
 		else {
-			my $generator= $sigil_to_generator_prefix{$sigil}.$name;
-			$class->can($generator)
-				or _croak("Symbol $sym not found in package $class, nor a generator $generator");
-			$class->exporter_register_generator($sym, $generator);
+			_croak("'$export' is not a valid export syntax");
 		}
 	}
 }
@@ -361,7 +399,7 @@ Define a module with exports
   sub util_function : Export {
     ...
   }
-  sub util_fn2 : Export( foo :bar :baz :default ) {
+  sub util_fn2 : Export( foo :bar :baz :default ) { # exports as "foo"
     ...
   }
   
@@ -385,7 +423,7 @@ Derive a new module with exports from the previous one
 Use the module
 
   use My::MoreUtils qw( -strict_and_warnings :baz @STUFF );
-  push @STUFF, util_fn2(), util_fn3();
+  push @STUFF, foo(), util_fn3();
 
 =head1 DESCRIPTION
 
@@ -406,11 +444,22 @@ create a derived module-with-exports.
 This exporter supports lots of ways to add custom processing during 'import' without needing to
 dig into the implementation too much.
 
+=item Be Lazy
+
+This exporter supports on-demand generators for symbols, as well as tags!  So if you have a
+complicated or expensive list of exports you can wait until the first time each is requested
+before finding out whether it is available or loading the dependent module.
+
 =item Advanced Features
 
 This exporter attempts to copy useful features from other Exporters, like renaming imports
 from the C<use> line, prefixes, suffixes, excluding symbols, importing to things other than
-C<caller>, declaring imports with an API, or with method attributes, etc.
+C<caller>, etc.
+
+=item More-Than-One-Way-To-Declare-Exports
+
+Pick your favorite.  You can use the L<export> do-what-I-mean function, method attributes, the
+C<< __PACKAGE__->exporter_ ... >> API, or declare package variables similar to L<Exporter>.
 
 =item No Non-core Dependencies
 
@@ -418,7 +467,7 @@ Because nobody likes extra deps forced into them.
 
 =item Speed
 
-(it hasn't been thoroughly optimized yet, but it was designed with low overhead in mind)
+(It should be fast... I haven't benchmarked yet, but it was designed with low overhead in mind)
 
 =back
 
@@ -437,6 +486,11 @@ This module follows the L<Exporter> convention for symbol names but with the add
 convention that names beginning with dash C<-> are treated as requests for runtime behavior.
 Additionally, it may consume the arguments that follow it, at the discresion of the module
 author.  This feature is designed to feel like command-line option processing.
+
+=item Different package variables than Exporter
+
+I like standards where possible, but Exporter's C<@EXPORT_OK> stank.  It should be a hash, not
+a list, for efficient lookups.
 
 =item (Small) Namespace and inheritance pollution
 
