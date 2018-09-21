@@ -177,7 +177,11 @@ sub exporter_register_generator {
 	my ($class, $export_name, $method_name)= @_;
 	$class= ref($class)||$class;
 	no strict 'refs';
-	${$class.'::EXPORT'}{$export_name}= \\$method_name;
+	if ($export_name =~ /^:/) {
+		${$class.'::EXPORT_TAGS'}= $method_name;
+	} else {
+		${$class.'::EXPORT'}{$export_name}= \\$method_name;
+	}
 }
 
 sub exporter_register_tag_members {
@@ -511,6 +515,190 @@ something like this:
       ...
     }
     sub import { My::Class::Exports->import_into(scalar caller, @_) }
+
+=back
+
+=head1 CONSUMER API
+
+=head1 AUTHOR API
+
+The only thing you need to do to build on this module are to inherit from it,
+and to declare your exports in the variables C<%EXPORT> and C<%EXPORT_TAGS>.
+The quickest way to do that is:
+
+  package My::Module;
+  use Exporter::Extensible -exporter_setup => 1;
+  export(...);
+
+Those lines are shorthand for:
+
+  package My::Module;
+  use strict;
+  use warnings;
+  use parent 'Exporter::Extensible';
+  our %EXPORT= ( ... );
+  our %EXPORT_TAGS = ( ... );
+
+Everything else below is just convenience and shorthand to make this easier.
+
+=head2 EXPORT BY API
+
+This module provides an api for specifying the exports.  You can call these methods on
+C<__PACKAGE__>, or if you ask for version-1 as C<< -export_setup => 1 >> you can use the
+convenience function L</export>.
+
+=over
+
+=item export
+
+This function takes a list of keys (which must be scalars), with optional values which must be
+refs.  If the value is omitted, C<export> attempts to do-what-you-mean to find it.
+
+=over
+
+=item 'foo' => \&CODE
+
+This declares a normal exported function.  If the ref is omitted, C<export> looks for it in the
+hierarchy of the current package.  Note that this lookup happens immediately, and packages
+derived from this cannot override C<foo> and have that be exported in its place.
+
+=item '$foo' => \$SCALAR, '@foo' => \@ARRAY, '%foo' => \%HASH, '*foo' => \*GLOB
+
+This exports a normal variable or typeglob.  If the ref is omitted, C<export> looks for it
+in the current package.
+
+=item '-foo' => $CODEREF or '-foo' => \"methodname"
+
+This differs from a normal exported function in that it will execute the coderef at import time,
+and sub-packages B<can> override it, since it gets called as a method.  The default is to derive
+the method name by removing the C<->.
+
+=item ':foo' => \@LIST
+
+Declaring a tag is nothing special; just give it an arrayref of what should be imported when
+the tag is encountered.
+
+=item '=$foo' => $CODEREF or '=$foo' => \"methodname"
+
+Prefixing an export name with an equal sign means you want to generate the export on the fly.
+The ref is understood to be the coderef or method name to call (as a method) which will return
+the ref of the correct type to be exported.  The default is to look for C<_generate_foo>,
+C<_generateSCALAR_foo>, C<_generateARRAY_foo>, C<_generateHASH_foo>, etc.
+
+=back
+
+=item exporter_register_symbol
+
+  __PACKAGE__->exporter_register_symbol($name_with_sigil, $ref);
+
+=item exporter_register_option
+
+  __PACKAGE__->exporter_register_option($name, $method, $arg_count);
+
+This declares an "option" like C<-foo>.  The name should B<not> include the leading C<->.
+The C<$method> argument can either be a package method name, or a coderef.  The C<$arg_count>
+is the number of options to consume from the C<import(...)> list following the option.
+
+To declare an option that consumes a variable number of arguments, specify C<*> for the count
+and then write your method so that it returns the number of arguments it consumed.
+
+=item exporter_register_generator
+
+  __PACKAGE__->exporter_register_generator($name_with_sigil, $method);
+
+This declares that you want to generate C<$name_with_sigil> on demand, using C<$method>.
+C<$name_with_sigil> may be a tag like C<':foo'>.
+C<$method> can be either a coderef or method name.  The function will be called as a method
+on an instance of your package.  The instance is the blessed hash of options passed by the
+current consumer of your module.
+
+=item exporter_register_tag_members
+
+  __PACKAGE__->exporter_register_tag_members($tag_name, @members);
+
+This pushes a list of C<@members> onto the end of the named tag.  C<$tag_name> should not
+include the leading ':'.  These C<@members> are cumulative with tags inherited from parent
+packages.  To avoid inheriting tag members, register a generator for the tag, instead.
+
+=back
+
+=head2 EXPORT BY ATTRIBUTES
+
+Attributes are fun.  If you enjoy artistic code, you might like to declare your exports like so:
+
+  sub foo : Export( :foo ) {}
+  sub bar : Export(-) {}
+  sub _generate_baz : Export(= :foo) {}
+
+instead of
+
+  export( 'foo', '-bar', '=baz', ':foo' => [ 'foo','baz' ] );
+
+The notations supported in the C<Export> attribute are different but similar to those in the
+L<export> function.
+
+=over
+
+=item 'foo'
+
+This indicates the export-name of a sub.  A sub may be exported as more than one name.
+Note that the first name in the list becomes the official name (superceeding the actual name of
+the sub) which will be added to any tags you listed.
+
+=item ':foo'
+
+This requests that the export-name get added to the named tag.  You may specify any number of
+tags.
+
+=item '-', '-(N)', '-foo', '-foo(N)'
+
+This sets up the sub as an option, capturing N arguments.  In the cases without a name, the
+name of the sub is used.
+
+=item '=', '=$', '=@', '=%', '=*', '=foo', '=$foo', ...
+
+This sets up the sub as a generator for the export-name.  If the word portion of the name is
+omitted, it is taken to be the sub name minus the prefix "_generate_" or "_generate$REFTYPE_".
+
+=back
+
+=head2 EXPORT BY VARIABLES
+
+As shown above, the configuration for your exports is the variable C<%EXPORT>.
+If you want the fastest possible module load time, you might decide to
+populate C<%EXPORT> manually.
+
+The keys of this hash are the strings that the user would specify as the C<import> arguments,
+like C<'-foo'>, C<'$foo'>, etc.  The value should be some kind of reference matching the sigil.
+Functions should be a coderef, scalars should be a scalarref, etc.  But, there are two special
+cases:
+
+=over
+
+=item Options
+
+An option is any key starting with C<->, like this module's own C<-exporter_setup>.  The values
+for these must be a pair of C<< [ $method_name, $arg_count_or_star ] >>.  (the default
+structure is subject to change, but this notation will always be supported)
+
+  { '-exporter_setup' => [ "exporter_setup", 1 ] }
+
+This means "call C<< $self->exporter_setup($arg1) >> when you see C<< import('-exporter_setup', $arg1, ... ) >>.
+Because it is a method call, subclasses of your module can override it.
+
+=item Generators
+
+Sometimes you want to generate the thing to be exported.  To indicate this, use a ref-ref of
+the method name, or a ref of the coderef to execute.  For example:
+
+  {
+    foo => \\"_generate_foo",
+    bar => \\&generate_bar,
+    baz => \sub { ... },
+  }
+
+Again, this is subject to change, but these notations will always be supported for
+backward-compatibility.
 
 =back
 
