@@ -35,6 +35,7 @@ sub same_hash {
 	my $name= shift;
 	no strict 'refs';
 	defined ${"CleanNamespace::"}{$name}
+		and defined *{"CleanNamespace::$name"}{HASH}
 		and defined ${"CleanNamespace::$name"}{a}
 		and ++${"Example::$name"}{a} == ${"CleanNamespace::$name"}{a};
 }
@@ -42,6 +43,7 @@ sub same_array {
 	my $name= shift;
 	no strict 'refs';
 	defined ${"CleanNamespace::"}{$name}
+		and defined *{"CleanNamespace::$name"}{ARRAY}
 		and @{"CleanNamespace::$name"}
 		and ++${"Example::$name"}[0] == ${"CleanNamespace::$name"}[0];
 }
@@ -101,14 +103,18 @@ ok( same_sub('bar'),     '&bar imported' );
 ok( same_scalar('bar'),  '$bar imported' );
 ok( same_array('bar'),   '@bar imported' );
 ok( same_hash('bar'),    '%bar imported' );
-{
+# need eval here or the glob will get vivified before running ->import(*bar)
+eval q{
 	local $Example::bar= 5;
 	is( $CleanNamespace::bar, 5, 'local on *bar{SCALAR} works' );
-}
-{
+	1;
+} or die $@;
+# need eval here or the glob will get vivified before running ->import(*bar)
+eval q{
 	local $CleanNamespace::bar= 6;
 	is( $Example::bar, 6, 'and in reverse' );
-}
+	1;
+} or die $@;
 
 note "--- Now, try un-import ---";
 

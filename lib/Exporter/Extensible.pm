@@ -1,7 +1,7 @@
 package Exporter::Extensible;
-
 use strict;
 use warnings;
+require MRO::Compat if $] lt '5.009005';
 
 our %EXPORT_PKG_CACHE;
 our %EXPORT_TAGS_PKG_CACHE;
@@ -36,6 +36,7 @@ our %sigil_to_generator_prefix= (
 );
 
 sub _croak { require Carp; goto &Carp::croak; }
+sub _carp { require Carp; goto &Carp::carp; }
 
 sub import {
 	my $self= shift;
@@ -43,8 +44,8 @@ sub import {
 	$self= bless { into => scalar caller }, $self
 		unless ref $self;
 	# Optional config hash might be given as first argument
-	$self= $self->exporter_global_config(shift)
-		if $_[0] eq 'HASH';
+	$self= $self->exporter_apply_global_config(shift)
+		if ref $_[0] eq 'HASH';
 	
 	# Quick access to these fields
 	my $inventory= ($EXPORT_PKG_CACHE{ref $self} ||= {});
@@ -66,7 +67,7 @@ sub import {
 		}
 		# Else, it is an option or plain symbol to be exported
 		# Check current package cache first, else do the full lookup.
-		my $ref= (exists $export_sym->{$symbol}? $export_sym->{$symbol} : $self->exporter_get_inherited($symbol))
+		my $ref= (exists $inventory->{$symbol}? $inventory->{$symbol} : $self->exporter_get_inherited($symbol))
 			or _croak("'$symbol' is not exported by ".ref($self));
 		
 		# If it starts with '-', it is an option, and might consume additional args
@@ -78,11 +79,14 @@ sub import {
 				$i += $consumed;
 			}
 			elsif ($count eq '?') {
-				if ($_[$i] eq 'HASH') {
-					$self->exporter_apply_inline_config($conf)->$method($conf);
+				if (ref $_[$i]) {
+					my $arg= $_[$i++];
+					(ref $arg eq 'HASH'? $self->exporter_apply_inline_config($arg) : $self)
+						->$method($arg);
 				} else {
 					$self->$method();
 				}
+			}
 			else {
 				$self->$method(@_[$i..($i+$count-1)]);
 				$i += $count;
@@ -106,10 +110,9 @@ sub import {
 					$self2->$method($symbol, $self2->{generator_arg});
 				};
 				# Verify generator output matches sigil
-				ref $ref eq $sigil_to_type{$sigil}
+				ref $ref eq $sigil_to_reftype{$sigil}
 					or _croak("Trying to export '$symbol', but generator returned "
 						.ref($ref).' (need '.$sigil_to_reftype{$sigil}.')');
-				$ref;
 			}
 			# Check for collisions.  Unlikely scenario in typical usage, but could occur if two
 			# tags include the same symbol, or if user adds a prefix or suffix that collides
@@ -151,9 +154,9 @@ sub import {
 		# into
 		#    [ foo => \$foo, foo => \%foo ]
 		my @flat_install= %$install;
-		for (reverse 0..$#flat_install) {
-			if my $i (ref $flat_install[$_] eq 'HASH') {
-				splice @flat_install, $i, 1, map +($flat_install[$i-1] => $_), values %{$flat_install[$_]};
+		for my $i (reverse 1..$#flat_install) {
+			if (ref $flat_install[$i] eq 'HASH') {
+				splice @flat_install, $i-1, 2, map +($flat_install[$i-1] => $_), values %{$flat_install[$i]};
 			}
 		}
 		# Then pass that list to the installer (or uninstaller)
@@ -176,7 +179,7 @@ sub Exporter::Extensible::UnimportScopeGuard::DESTROY {
 
 sub exporter_install {
 	my $self= shift;
-	my $into= $self->{into} or croak "'into' must be defined before exporter_install";
+	my $into= $self->{into} or _croak "'into' must be defined before exporter_install";
 	my $replace= $self->{replace} || 'warn';
 	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
 	for (my $i= 0; $i < @$list; $i+= 2) {
@@ -195,23 +198,23 @@ sub exporter_install {
 			# there is actually no way I know of to test existence of *foo{SCALAR}.
 			# It auto-vivifies when accessed.
 			elsif (ref $ref ne 'SCALAR') {
-				$conflict= *$pkg_dest{ref $ref} != $ref;
+				$conflict= *$pkg_dest{ref $ref} && *$pkg_dest{ref $ref} != $ref;
 			}
 			if ($conflict) {
 				next if $replace eq 'skip';
 				my $msg= ($replace eq 'warn'? "Overwriting '" : "Refusing to overwrite '")
 					. $reftype_to_sigil{ref $ref} . $pkg_dest
-					. "' with export from " . ref($self);
+					. "' with $ref from " . ref($self);
 				$replace eq 'warn'? _carp($msg) : _croak($msg);
 			}
 		}
-		*$pkg_dest= $install->{$dest};
+		*$pkg_dest= $ref;
 	}
 }
 
 sub exporter_uninstall {
 	my $self= shift;
-	my $into= $self->{into} or croak "'into' must be defined before exporter_uninstall";
+	my $into= $self->{into} or _croak "'into' must be defined before exporter_uninstall";
 	no strict 'refs';
 	my $stash= \%{$into.'::'};
 	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
@@ -228,6 +231,7 @@ sub exporter_uninstall {
 		else {
 			my $pkg_dest= $into.'::'.$name;
 			# If the value we installed is no longer there, do nothing
+			print "# ref=$ref \n";
 			next unless $ref == (*{$pkg_dest}{ref $ref}||0);
 			# Remove old typeglob, then copy all slots except reftype back to that typeglob name
 			my $old= delete $stash->{$name};
@@ -428,7 +432,7 @@ sub _exporter_get_ref_to_package_var {
 	my ($class, $symbol)= @_;
 	my ($sigil, $name)= ($symbol =~ /^([\$\@\%\*]?)(\w+)$/)
 		or _croak("'$symbol' is not an allowed variable name");
-	my $reftype= $sigil_to_type{$sigil};
+	my $reftype= $sigil_to_reftype{$sigil};
 	no strict 'refs';
 	return $reftype eq 'GLOB'? *{$class.'::'.$name} : *{$class.'::'.$name}{$reftype};
 }
@@ -520,8 +524,8 @@ sub exporter_export {
 				$ref= \$coderef; # REF to coderef
 			}
 			else {
-				ref $ref eq $sigil_to_type{$sigil}
-					or _croak("'$export' should be $sigil_to_type{$sigil} but you supplied ".ref($ref));
+				ref $ref eq $sigil_to_reftype{$sigil}
+					or _croak("'$export' should be $sigil_to_reftype{$sigil} but you supplied ".ref($ref));
 			}
 			no strict 'refs';
 			${$class.'::EXPORT'}{$sigil.$name}= $ref;
