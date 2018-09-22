@@ -10,7 +10,7 @@ our %EXPORT= (
 	-exporter_setup => [ 'exporter_setup', 1 ],
 );
 
-our %sigil_to_type= (
+our %sigil_to_reftype= (
 	'$' => 'SCALAR',
 	'@' => 'ARRAY',
 	'%' => 'HASH',
@@ -18,6 +18,13 @@ our %sigil_to_type= (
 	'&' => 'CODE',
 	''  => 'CODE',
 	'-' => 'CODE',
+);
+our %reftype_to_sigil= (
+	'SCALAR' => '$',
+	'ARRAY'  => '@',
+	'HASH'   => '%',
+	'GLOB'   => '*',
+	'CODE'   => '',
 );
 our %sigil_to_generator_prefix= (
 	'$' => '_generateSCALAR_',
@@ -31,82 +38,261 @@ our %sigil_to_generator_prefix= (
 sub _croak { require Carp; goto &Carp::croak; }
 
 sub import {
-	# Can be called as class method or instance method.
 	my $self= shift;
-	$self= bless {}, $self unless ref $self;
+	# Can be called as class method or instance method
+	$self= bless { into => scalar caller }, $self
+		unless ref $self;
+	# Optional config hash might be given as first argument
+	$self= $self->exporter_global_config(shift)
+		if $_[0] eq 'HASH';
 	
-	# If first argument is a hashref, use it as global configuration for this operation
-	%$self= (%$self, %{+shift}) if ref $_[0] eq 'HASH';
-	
-	# Capture caller() unless 'into' was already indicated.
-	my $into= $self->{into} ||= caller;
-	# If caller wants scope option, make sure it has been blessed
-	bless $self->{scope}, 'Exporter::Extensible::UnimportScopeGuard'
-		if ref $self->{scope} eq 'SCALAR';
-	
-	# Cache some lookups
-	my $export_sym= ($EXPORT_PKG_CACHE{ref $self} ||= {});
+	# Quick access to these fields
+	my $inventory= ($EXPORT_PKG_CACHE{ref $self} ||= {});
+	my $install= $self->{install_set} ||= {};
 	
 	for (my $i= 0; $i < @_;) {
 		my $symbol= $_[$i++];
 		my ($sigil, $name)= ($symbol =~ /^([-:\$\@\%\*]?)(.*)/); # should always match
-		# If followed by a hashref, add those options to the current ones.
-		# But, not if it is an -option, because -option might use hashrefs for other purposes.
-		local %$self= ( %$self, %{$_[$i++]} )
-			if ref $_[$i] eq 'HASH' and $sigil ne '-';
 		
 		# If it is a tag, then recursively call import on that list
 		if ($sigil eq ':') {
-			my @tag_list= $self->exporter_get_tag_members($name);
-			$self->import(@tag_list) if @tag_list; # only if the tags weren't all excluded
+			my $self2= $self;
+			# If followed by a hashref, add those options to the current ones.
+			$self2= $self->exporter_apply_inline_config($_[$i++])
+				if ref $_[$i] eq 'HASH';
+			my @tag_list= $self2->exporter_get_tag_members($name);
+			$self2->import(@tag_list) if @tag_list; # only if the tags weren't all excluded
 			next;
 		}
 		# Else, it is an option or plain symbol to be exported
 		# Check current package cache first, else do the full lookup.
 		my $ref= (exists $export_sym->{$symbol}? $export_sym->{$symbol} : $self->exporter_get_inherited($symbol))
 			or _croak("'$symbol' is not exported by ".ref($self));
-		# Generators are a ref ref to a method name or coderef.
-		if (ref $ref eq 'REF') {
-			$ref= $$ref;
-			$ref= $$ref unless ref $ref eq 'CODE';
-			$ref= $self->$ref($symbol);
-		}
 		
 		# If it starts with '-', it is an option, and might consume additional args
 		if ($sigil eq '-') {
 			my ($method, $count)= @$ref;
 			if ($count eq '*') {
 				my $consumed= $self->$method(@_[$i..$#_]);
-				$consumed =~ /^[0-9]+/ or _croak("Method $method in ".ref($self)." must return a number of arguments consumed");
+				$consumed =~ /^[0-9]+$/ or _croak("Method $method in ".ref($self)." must return a number of arguments consumed");
 				$i += $consumed;
-			} else {
+			}
+			elsif ($count eq '?') {
+				if ($_[$i] eq 'HASH') {
+					$self->exporter_apply_inline_config($conf)->$method($conf);
+				} else {
+					$self->$method();
+				}
+			else {
 				$self->$method(@_[$i..($i+$count-1)]);
 				$i += $count;
 			}
-			next;
 		}
-		
-		no strict 'refs';
-		no warnings 'uninitialized','redefine';
-		my $dest= $self->{prefix}.(defined $self->{-as}? $self->{-as} : $name).$self->{suffix};
-		if (ref $into eq 'HASH') {
-			$into->{$dest}= $ref;
-			next;
-		}
-		$dest= $into.'::'.$dest;
-		if (exists &$dest and ref $symbol eq 'CODE' and \&$dest != $symbol) {
-			my $r= $self->{replace} || $self->{-replace};
-			if (!$r || $r eq 'carp' || $r eq 'warn') {
-				_carp("Overwriting existing sub '$dest' with sub '$name' exported by ".ref($self));
+		else {
+			my $self2= $self;
+			# If followed by a hashref, add those options to the current ones.
+			$self2= $self->exporter_apply_inline_config($_[$i++])
+				if ref $_[$i] eq 'HASH';
+			no warnings 'uninitialized';
+			my $dest= delete $self2->{as} || $self2->{prefix} . $name . $self2->{suffix};
+			use warnings 'uninitialized';
+			# If $ref is a generator (ref-ref) then run it, unless it was already run for the
+			# current symbol exporting to the current dest.
+			if (ref $ref eq 'REF') {
+				$ref= $self2->{_generator_cache}{$symbol.";".$dest} ||= do {
+					# Run the generator.
+					my $method= $$ref;
+					$method= $$method unless ref $method eq 'CODE';
+					$self2->$method($symbol, $self2->{generator_arg});
+				};
+				# Verify generator output matches sigil
+				ref $ref eq $sigil_to_type{$sigil}
+					or _croak("Trying to export '$symbol', but generator returned "
+						.ref($ref).' (need '.$sigil_to_reftype{$sigil}.')');
+				$ref;
 			}
-			elsif ($r eq 'croak' || $r eq 'fatal' || $r eq 'die') {
-				_croak("Refusing to overwrite existing sub '$dest' with sub '$name' exported by ".ref($self));
+			# Check for collisions.  Unlikely scenario in typical usage, but could occur if two
+			# tags include the same symbol, or if user adds a prefix or suffix that collides
+			# with another exported name.
+			if ($install->{$dest}) {
+				if ($install->{$dest} != $ref) { # most common case of duplicate export, ignore it.
+					if (ref $ref eq 'GLOB' || ref $install->{$dest} eq 'GLOB') {
+						no strict 'refs';
+						# globrefs will never be equal - compare the glob itself.
+						ref $ref eq 'GLOB' && ref $install->{dest} eq 'GLOB' && *{$install->{$dest}} eq *$ref
+							# can't install an entire glob at the same time as a piece of a glob.
+							or _croak("Can't install ".ref($ref)." and ".$install->{dest}." into the same symbol '".$dest."'");
+					}
+					# Upgrade this item to a hashref of reftype if it wasn't already  (hashrefs are always stored this way)
+					$install->{$dest}= { ref($install->{$dest}) => $install->{$dest} }
+						unless ref $install->{$dest} eq 'HASH';
+					# Assign this new ref into a slot of that hash, unless something different was already there
+					($install->{$dest}{ref $ref} ||= $ref) == $ref
+						or _croak("Trying to import conflicting ".ref($ref)." values for '".$dest."'");
+				}
+			}
+			# Only make install->{$dest} a hashref if we really have to, for performance.
+			elsif (ref $ref eq 'HASH') {
+				$install->{$dest}{HASH}= $ref;
+			}
+			else {
+				$install->{$dest}= $ref;
 			}
 		}
-		$self->{un}? $self->exporter_unimport_ref($dest, $ref) : (*$dest= $ref);
-		#print "dest= ".*$dest." ref=$ref\n";
-		push @{${$self->{scope}}}, $dest, $ref if $self->{scope};
 	}
+	# This is called recursively.  If we are back to the top level (!defined ->{parent}) then call
+	# install method to copy the refs into the target package.
+	unless ($self->{parent}) {
+		# Install might actually be uninstall.  It also might be overridden by the user.
+		# The exporter_combine_config sets this up so we don't need to think about details.
+		my $method= $self->{installer} || ($self->{un}? 'exporter_uninstall' : 'exporter_install');
+		# Convert
+		#    { foo => { SCALAR => \$foo, HASH => \%foo } }
+		# into
+		#    [ foo => \$foo, foo => \%foo ]
+		my @flat_install= %$install;
+		for (reverse 0..$#flat_install) {
+			if my $i (ref $flat_install[$_] eq 'HASH') {
+				splice @flat_install, $i, 1, map +($flat_install[$i-1] => $_), values %{$flat_install[$_]};
+			}
+		}
+		# Then pass that list to the installer (or uninstaller)
+		$self->$method(\@flat_install);
+		# If scope requested, create the scope-guard object
+		if (my $scope= delete $self->{scope}) {
+			$$scope= bless [ $self, \@flat_install ], 'Exporter::Extensible::UnimportScopeGuard';
+		}
+		# It's entirely likely that a generator might curry $self inside the sub it generated.
+		# So, we end up with a circular reference if we're holding onto the set of all things we
+		# exported.  Clear the set.
+		%$install= ();
+	}
+	1;
+}
+sub Exporter::Extensible::UnimportScopeGuard::DESTROY {
+	my ($exporter, $list)= @{+shift};
+	$exporter->exporter_uninstall($list);
+}
+
+sub exporter_install {
+	my $self= shift;
+	my $into= $self->{into} or croak "'into' must be defined before exporter_install";
+	my $replace= $self->{replace} || 'warn';
+	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
+	for (my $i= 0; $i < @$list; $i+= 2) {
+		my ($name, $ref)= @{$list}[$i..1+$i];
+		my $pkg_dest= $into.'::'.$name;
+		# Each value is either a hashref with keys matching the parts of a typeglob,
+		# or it is a single ref that can be assigned directly to the typeglob.
+		no strict 'refs';
+		no warnings 'redefine';
+		if ($replace ne 1) {
+			my $conflict;
+			if (ref $ref eq 'GLOB') {
+				my $stash= \%{$into.'::'};
+				$conflict= $stash->{$name} && $stash->{$name} ne *$ref;
+			}
+			# there is actually no way I know of to test existence of *foo{SCALAR}.
+			# It auto-vivifies when accessed.
+			elsif (ref $ref ne 'SCALAR') {
+				$conflict= *$pkg_dest{ref $ref} != $ref;
+			}
+			if ($conflict) {
+				next if $replace eq 'skip';
+				my $msg= ($replace eq 'warn'? "Overwriting '" : "Refusing to overwrite '")
+					. $reftype_to_sigil{ref $ref} . $pkg_dest
+					. "' with export from " . ref($self);
+				$replace eq 'warn'? _carp($msg) : _croak($msg);
+			}
+		}
+		*$pkg_dest= $install->{$dest};
+	}
+}
+
+sub exporter_uninstall {
+	my $self= shift;
+	my $into= $self->{into} or croak "'into' must be defined before exporter_uninstall";
+	no strict 'refs';
+	my $stash= \%{$into.'::'};
+	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
+	for (my $i= 0; $i < @$list; $i+= 2) {
+		my ($name, $ref)= @{$list}[$i..1+$i];
+		# Each value is either a hashref with keys matching the parts of a typeglob,
+		# or it is a single ref that can be assigned directly to the typeglob.
+		no strict 'refs';
+		if (ref $ref eq 'GLOB') {
+			# If the value we installed is no longer there, do nothing
+			next unless *$ref eq ($stash->{$name}||'');
+			delete $stash->{$name};
+		}
+		else {
+			my $pkg_dest= $into.'::'.$name;
+			# If the value we installed is no longer there, do nothing
+			next unless $ref == (*{$pkg_dest}{ref $ref}||0);
+			# Remove old typeglob, then copy all slots except reftype back to that typeglob name
+			my $old= delete $stash->{$name};
+			($_ ne ref $ref) && *{$old}{$_} && (*$pkg_dest= *{$old}{$_})
+				for qw( SCALAR HASH ARRAY CODE IO );
+		}
+	}
+}
+
+sub exporter_config_prefix    { $_[0]{prefix}=    $_[1] if @_ > 1; $_[0]{prefix};    }
+sub exporter_config_suffix    { $_[0]{suffix}=    $_[1] if @_ > 1; $_[0]{suffix};    }
+sub exporter_config_as        { $_[0]{as}=        $_[1] if @_ > 1; $_[0]{as};        }
+sub exporter_config_un        { $_[0]{un}=        $_[1] if @_ > 1; $_[0]{un};        }
+sub exporter_config_scope     { $_[0]{scope}=     $_[1] if @_ > 1; $_[0]{scope};     }
+sub exporter_config_not       { $_[0]{not}=       $_[1] if @_ > 1; $_[0]{not};       }
+sub exporter_config_installer { $_[0]{installer}= $_[1] if @_ > 1; $_[0]{installer}; }
+
+our %replace_aliases= (
+	1     => 1,
+	carp  => 'carp',
+	warn  => 'carp',
+	croak => 'croak',
+	fatal => 'croak',
+	die   => 'croak',
+	skip  => 'skip',
+);
+sub exporter_config_replace {
+	$_[0]{replace}= $replace_aliases{$_[1]} or _croak("Invalid 'replace' value: '$_[1]'")
+		if @_ > 1;
+	$_[0]{replace};
+}
+
+sub exporter_apply_global_config {
+	my ($self, $conf)= @_;
+	for my $k (keys %$conf) {
+		my $setter= $self->can('exporter_config_'.$k)
+			or (substr($k,0,1) eq '-' && $self->can('exporter_config_'.substr($k,1)))
+			or _croak("No such exporter configuration '$k'");
+		$self->$setter($conf->{$k});
+	}
+	$self;
+}
+
+sub exporter_apply_inline_config {
+	my ($self, $conf)= @_;
+	my @for_global_config= grep /^-/, keys %$conf;
+	# In the event that only "-as" was given, we don't actually need to create a new object
+	if (@for_global_config == 1 && $for_global_config[0] eq '-as') {
+		$self->exporter_config_as($conf->{-as});
+		return $self;
+	}
+	# Else clone and apply temporary settings
+	my $self2= bless { %$self, parent => $self }, ref $self;
+	for my $k (@for_global_config) {
+		my $setter= $self2->can('export_config_'.substr($k,1))
+			or _croak("No such exporter configuration '$k'");
+		$self2->$setter($conf->{$k});
+	}
+	# If any options didn't start with '-', then the config becomes a parameter to the generator.
+	# The generator cache isn't valid for $self2 since the arg changed.
+	if (@for_global_config < scalar keys %$conf) {
+		$self2->{generator_arg}= $conf;
+		delete $self2->{_generator_cache};
+	}
+	$self2;
 }
 
 sub unimport {
@@ -119,26 +305,6 @@ sub unimport {
 
 sub import_into {
 	shift->import({ into => shift, (ref $_[0] eq 'HASH'? %{+shift} : ()) }, @_);
-}
-
-sub exporter_unimport_ref {
-	my ($self, $full_name, $ref)= @_;
-	no strict 'refs';
-	my ($stashname, $name)= ($full_name =~ /(.*:)([^:]+)$/);
-	my $stash= \%$stashname;
-	if (ref $ref eq 'GLOB') {
-		# If the value we installed is no longer there, do nothing
-		return if *$ref ne ($stash->{$name}||'');
-		delete $stash->{$name};
-	}
-	else {
-		# If the value we installed is no longer there, do nothing
-		return if $ref != (*{$full_name}{ref $ref}||0);
-		# Remove old typeglob, then copy all slots except reftype back to that typeglob name
-		my $old= delete $stash->{$name};
-		($_ ne ref $ref) && *{$old}{$_} && (*$full_name= *{$old}{$_})
-			for qw( SCALAR HASH ARRAY CODE IO );
-	}
 }
 
 sub exporter_register_symbol {
@@ -204,7 +370,8 @@ sub exporter_get_tag_members {
 		for (@{ mro::get_linear_isa($class) }) {
 			my $tag= ${$_.'::EXPORT_TAGS'}{$tagname} or next;
 			if (ref $tag ne 'ARRAY') {
-				push @$list, @{ $self->$tag };
+				# Found a generator (coderef or method name).  Call it to get the list of tags.
+				push @$list, @{ $self->$tag(delete $self->{generator_arg}) };
 				++$dynamic;
 				last;
 			}
@@ -213,7 +380,7 @@ sub exporter_get_tag_members {
 		$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $list unless $dynamic;
 	}
 	# Apply "not" exclusions
-	if (ref $self && (my $not= $self->{not} || $self->{-not})) {
+	if (ref $self && (my $not= $self->{not})) {
 		$list= [ @$list ]; # clone before removing exclusions
 		# N^2 exclusion iteration isn't cool, but doing something smarter requires a
 		# lot more setup that probably won't pay off for the usual tiny lists of 'not'.
@@ -383,15 +550,11 @@ sub exporter_export {
 	}
 }
 
-package Exporter::Extensible::UnimportScopeGuard;
-
-sub DESTROY {
-	my $self= shift;
-	Exporter::Extensible->exporter_unimport_ref(splice @$self, -2)
-		while @$self;
-}
-
 1;
+
+__END__
+
+# ABSTRACT: Create modules with exports which can be "subclassed"
 
 =head1 SYNOPSIS
 
@@ -400,25 +563,16 @@ Define a module with exports
   package My::Utils;
   use Exporter::Extensible -exporter_setup => 1;
   
-  sub util_function : Export {
-    ...
-  }
-  sub util_fn2 : Export( foo :bar :baz :default ) { # exports as "foo"
-    ...
-  }
+  export(qw( foo $x @STUFF -strict_and_warnings ), ':baz' => ['foo'] );
   
-  our ($x, $y, $z);
-  export(qw( $x $y $z ));
+  sub foo { ... }
   
-  our @GLOBAL_LIST_OF_STUFF;
-  export('@STUFF' => \@GLOBAL_LIST_OF_STUFF);
-  
-  sub strict_and_warnings : Export(-) {
+  sub strict_and_warnings {
     strict->import;
     warnings->import;
   }
 
-Derive a new module with exports from the previous one
+Create a new module which exports all that, and more
 
   package My::MoreUtils;
   use My::Utils -exporter_setup => 1;
@@ -427,6 +581,7 @@ Derive a new module with exports from the previous one
 Use the module
 
   use My::MoreUtils qw( -strict_and_warnings :baz @STUFF );
+  # Use the exported things
   push @STUFF, foo(), util_fn3();
 
 =head1 DESCRIPTION
@@ -441,12 +596,18 @@ the pros/cons of this module:
 =item Extend Your Module
 
 This exporter focuses on the ability and ease of letting you "subclass" a module-with-exports to
-create a derived module-with-exports.
+create a derived module-with-exports.  It supports multiple inheritance, for things like tying
+together all your utility modules into a mega-utility module.
 
 =item Extend Behavior of C<import>
 
 This exporter supports lots of ways to add custom processing during 'import' without needing to
-dig into the implementation too much.
+dig into the implementation.
+
+=item More than just subs
+
+This module supports exporting C<foo>, C<$foo>, C<@foo>, C<%foo>, or even C<*foo>.  It also
+supports tags (C<:foo>) and options (C<-foo>).
 
 =item Be Lazy
 
@@ -454,11 +615,11 @@ This exporter supports on-demand generators for symbols, as well as tags!  So if
 complicated or expensive list of exports you can wait until the first time each is requested
 before finding out whether it is available or loading the dependent module.
 
-=item Advanced Features
+=item Full-featured
 
-This exporter attempts to copy useful features from other Exporters, like renaming imports
-from the C<use> line, prefixes, suffixes, excluding symbols, importing to things other than
-C<caller>, etc.
+This exporter attempts to copy useful features from other popular exporters, like renaming
+imports with C<-prefix>/C<-suffix>/C<-as>, excluding symbols with C<-not>, scoped-unimport,
+passing options to generators, importing to things other than C<caller>, etc.
 
 =item More-Than-One-Way-To-Declare-Exports
 
@@ -467,11 +628,12 @@ C<< __PACKAGE__->exporter_ ... >> API, or declare package variables similar to L
 
 =item No Non-core Dependencies
 
-Because nobody likes extra deps forced into them.
+Because nobody likes big dependency trees.
 
 =item Speed
 
-(It should be fast... I haven't benchmarked yet, but it was designed with low overhead in mind)
+I haven't benchmarked this yet, but I approached it with a mindset of "make the common case
+fast".  The features are written so you only pay for what you use.
 
 =back
 
@@ -481,8 +643,10 @@ Because nobody likes extra deps forced into them.
 
 =item Imposes meaning on hashrefs
 
-Hashref arguments following a symbol name provide options for how to import that symbol.
-If the first argument is a hashref it provides options to C<import> itself.
+If the first argument to C<import> is a hashref, it is used as configuration of C<import>.
+Hashref arguments following a symbol name are treated as arguments to the generator (if any)
+or config overides for a tag.  (but you can control hashref processing on your own for C<-NAME>
+in the API you are authoring).
 
 =item Imposes meaning for notation C<-NAME>
 
@@ -491,23 +655,15 @@ convention that names beginning with dash C<-> are treated as requests for runti
 Additionally, it may consume the arguments that follow it, at the discresion of the module
 author.  This feature is designed to feel like command-line option processing.
 
-=item Different package variables than Exporter
-
-I like standards where possible, but Exporter's C<@EXPORT_OK> stank.  It should be a hash, not
-a list, for efficient lookups.
-
 =item (Small) Namespace and inheritance pollution
 
-This module defines a few API methods used for the declaration and definition of the export
-process.  Exporting modules must inherit from this module, thus inheriting that API as well.
-The API I<doesn't> get exported to consumers even if they request ':all', so it's only a small
-worry for name collisions within the packages defining the exports.
+This module defines an API used for the declaration and implementation of the export process.
+If you wanted to export any symbol starting with the prefix C<exporter_> then you probably
+shouldn't build on top of this exporter.
+(I could have kept these meta-methods in a separate namespace, but that would defeat the goal
+of "easy to extend".)
 
-I could have kept these meta-methods in a separate namespace, but that would defeat the goal of
-"easy to extend".
-
-If you want a pure class hierarchy for OO purposes but also export a few symbols, consider
-something like this:
+If you want a pure class hierarchy but also export a few symbols, consider something like this:
 
     package My::Class;
     package My::Class::Exports {
@@ -518,13 +674,124 @@ something like this:
 
 =back
 
-=head1 CONSUMER API
+=head1 IMPORT API (for consumer)
 
-=head1 AUTHOR API
+The user-facing API is mostly the same as Sub::Exporter or Exporter::Tiny, except that C<-foo>
+is not a group and there are no "collections" (though you could implement collections using
+options).
 
-The only thing you need to do to build on this module are to inherit from it,
-and to declare your exports in the variables C<%EXPORT> and C<%EXPORT_TAGS>.
-The quickest way to do that is:
+=head2 C<name>, C<$name>, C<@name>, C<%name>, C<*name>, C<:name>
+
+Same as L<Exporter>, except it might be generated on the fly, and may be followed by an
+options hashref.
+
+=head2 C<-name>
+
+Run custom processing defined by module author, possibly consuming arguments that follow it.
+
+=head2 Global Options
+
+If the first argument to C<import> is a hashref, these fields are recognized:
+
+=over
+
+=item into
+
+Package name or hashref to which all symbols will be exported.  Defaults to C<caller>.
+
+=item scope
+
+Empty scalar-ref whose scope determines when to unimport the things just imported.
+After a successful import, this wil be assigned a scope-guard object whose destructor
+un-imports those same symbols.
+
+=item not
+
+Only applies to tags.  Can be a list, regex, or coderef that filters out un-wanted imports.
+
+=item no
+
+If true, then the list of symbols will be uninstalled from the C<into> package.
+
+=item replace
+
+Determines what to do if the symbol already exists in the target package:
+
+=over
+
+=item 1
+
+Replace the symbol with no warning.
+
+=item C<'warn'> (or C<'carp'>)
+
+Replace the symbol but warn about it using C<carp>.
+
+=item C<'die'> (or C<'fatal'> or C<'croak'>)
+
+Don't import the symbol, and die by calling C<croak>.
+
+=item C<'skip'>
+
+Don't import the symbol and don't warn about it.
+
+=back
+
+=item installer
+
+A coderef which will be called instead of L</exporter_install> or L</export_uninstall>.
+Uses the same arguments:
+
+  installer => sub {
+	my ($exporter, $list)= @_;
+	for (my $i= 0; $i < @$list; $i+= 2) {
+		my ($name, $ref)= @{$list}[$i..1+$i];
+		...
+  }
+
+=item prefix (or -prefix)
+
+Prefix all imported names with this string.
+
+=item suffix (or -suffix)
+
+Append this string to all imported named.
+
+=back
+
+=head2 In-line Options
+
+The arguments to C<import> are generally scalars.  If one is followed by a hashref, the hashref
+becomes the argument to the generator (if any), but may also contain:
+
+=over
+
+=item -as => $name
+
+Install the thing as this exact name. (no sigil, but relative to C<into>)
+
+=item -prefix
+
+Same as global option C<prefix>, limited to this one tag.
+
+=item -suffix => $suffix
+
+Same as global option C<suffix>, limited to this one tag.
+
+=item -not
+
+Same as global option C<not>, limited to this one tag.
+
+=item -replace
+
+Same as global option C<replace>, limited to this one tag.
+
+=back
+
+=head1 EXPORT API (for author)
+
+The underlying requirements for using this exporter are to inherit from it, and declare your
+exports in the variables C<%EXPORT> and C<%EXPORT_TAGS>.  The quickest way to do that is:
 
   package My::Module;
   use Exporter::Extensible -exporter_setup => 1;
@@ -541,15 +808,13 @@ Those lines are shorthand for:
 
 Everything else below is just convenience and shorthand to make this easier.
 
-=head2 EXPORT BY API
+=head2 Export by API
 
 This module provides an api for specifying the exports.  You can call these methods on
 C<__PACKAGE__>, or if you ask for version-1 as C<< -export_setup => 1 >> you can use the
 convenience function L</export>.
 
-=over
-
-=item export
+=head3 export
 
 This function takes a list of keys (which must be scalars), with optional values which must be
 refs.  If the value is omitted, C<export> attempts to do-what-you-mean to find it.
@@ -587,11 +852,11 @@ C<_generateSCALAR_foo>, C<_generateARRAY_foo>, C<_generateHASH_foo>, etc.
 
 =back
 
-=item exporter_register_symbol
+=head3 exporter_register_symbol
 
   __PACKAGE__->exporter_register_symbol($name_with_sigil, $ref);
 
-=item exporter_register_option
+=head3 exporter_register_option
 
   __PACKAGE__->exporter_register_option($name, $method, $arg_count);
 
@@ -602,7 +867,7 @@ is the number of options to consume from the C<import(...)> list following the o
 To declare an option that consumes a variable number of arguments, specify C<*> for the count
 and then write your method so that it returns the number of arguments it consumed.
 
-=item exporter_register_generator
+=head3 exporter_register_generator
 
   __PACKAGE__->exporter_register_generator($name_with_sigil, $method);
 
@@ -612,7 +877,7 @@ C<$method> can be either a coderef or method name.  The function will be called 
 on an instance of your package.  The instance is the blessed hash of options passed by the
 current consumer of your module.
 
-=item exporter_register_tag_members
+=head3 exporter_register_tag_members
 
   __PACKAGE__->exporter_register_tag_members($tag_name, @members);
 
@@ -620,9 +885,7 @@ This pushes a list of C<@members> onto the end of the named tag.  C<$tag_name> s
 include the leading ':'.  These C<@members> are cumulative with tags inherited from parent
 packages.  To avoid inheriting tag members, register a generator for the tag, instead.
 
-=back
-
-=head2 EXPORT BY ATTRIBUTES
+=head2 Export by Attribute
 
 Attributes are fun.  If you enjoy artistic code, you might like to declare your exports like so:
 
@@ -635,14 +898,14 @@ instead of
   export( 'foo', '-bar', '=baz', ':foo' => [ 'foo','baz' ] );
 
 The notations supported in the C<Export> attribute are different but similar to those in the
-L<export> function.
+L</export> function.  You may include one or more of the following in the parenthesees:
 
 =over
 
 =item 'foo'
 
 This indicates the export-name of a sub.  A sub may be exported as more than one name.
-Note that the first name in the list becomes the official name (superceeding the actual name of
+Note that the first name in the list becomes the official name (ignoring the actual name of
 the sub) which will be added to any tags you listed.
 
 =item ':foo'
@@ -653,16 +916,17 @@ tags.
 =item '-', '-(N)', '-foo', '-foo(N)'
 
 This sets up the sub as an option, capturing N arguments.  In the cases without a name, the
-name of the sub is used.
+name of the sub is used.  N may be C<'*'> or C<'?'>; see L</IMPLEMENTING OPTIONS>.
 
 =item '=', '=$', '=@', '=%', '=*', '=foo', '=$foo', ...
 
 This sets up the sub as a generator for the export-name.  If the word portion of the name is
 omitted, it is taken to be the sub name minus the prefix "_generate_" or "_generate$REFTYPE_".
+See L</IMPLEMENTING GENERATORS>.
 
 =back
 
-=head2 EXPORT BY VARIABLES
+=head2 Export by Variables
 
 As shown above, the configuration for your exports is the variable C<%EXPORT>.
 If you want the fastest possible module load time, you might decide to
@@ -683,7 +947,8 @@ structure is subject to change, but this notation will always be supported)
 
   { '-exporter_setup' => [ "exporter_setup", 1 ] }
 
-This means "call C<< $self->exporter_setup($arg1) >> when you see C<< import('-exporter_setup', $arg1, ... ) >>.
+This means "call C<< $self->exporter_setup($arg1) >> when you see
+C<< import('-exporter_setup', $arg1, ... ) >>.
 Because it is a method call, subclasses of your module can override it.
 
 =item Generators
@@ -702,12 +967,82 @@ backward-compatibility.
 
 =back
 
+=head1 IMPLEMENTING OPTIONS
+
+Exporter::Extensible lets you run whatever code you like when it encounters "-name" in the
+import list.  To accomodate all the different ways I wanted to use this, I decided to let the
+option decide how many arguments to consume.  So, the API is as follows:
+
+  # By default, no arguments are captured.  A ref may not follow this option.
+  sub name : Export( -name ) {
+    my $exporter= shift;
+	...
+  }
+  
+  # Ask for three arguments (regardless of whether they are refs)
+  sub name : Export( -name(3) ) {
+     my ($exporter, $arg1, $arg2, $arg3)= @_;
+	 ...
+  }
+  
+  # Ask for one argument but only if it is a ref of some kind.
+  # If it is a hashref, this also processes import options like -prefix, -replace, etc.
+  sub name : Export( -name(?) ) {
+    my ($exporter, $maybe_arg)= @_;
+    ...
+  }
+
+  # Might need any number of arguments.  Return the number we consumed.
+  sub name : Export( -name(*) ) {
+    my $exporter = shift;
+	while (@_) {
+	   last if ...;
+	   ...
+	   ++$consumed;
+    }
+	return $consumed;
+  }
+
+The first argument C<$exporter> is a instance of the exporting package, and you can inspect it
+or even reconfigure it.
+
+=head1 IMPLEMENTING GENERATORS
+
+A generator is just a function that returns the thing to be imported.  A generator is called as:
+
+  $generator->($exporter, $symbol, $args);
+
+where C<$exporter> is an instance of your package, C<$symbol> is the name of the thing
+as specified to C<import> (with sigil) and C<$args> is the optional hashref the user might have
+given following C<$symbol>.
+
+If you wanted to implement something like L<Sub::Exporter>'s "Collectors", you can just write
+some options that take an argument and store it in the $exporter instance.  Then, your
+generator can retrieve the values from there.
+
+  package MyExports;
+  use Exporter::Extensible -exporter_setup => 1;
+  export(
+    # be sure to use names that won't conflict with Exporter::Extensible's internals
+    '-foo(1)' => sub { shift->{foo}= shift },
+	'-bar(1)' => sub { shift->{bar}= shift },
+	'=foobar' => sub { my $foobar= $_[0]{foo} . $_[0]{bar}; sub { $foobar } },
+  );
+  
+  package User;
+  use MyModule -foo => 'abc', -bar -> 'def', 'foobar', -foo => 'xyz', 'foobar', { -as => "x" };
+  # This exports a sub as "foobar" which returns "abcdef", and a sub as "x" which
+  # returns "xyzdef".  Note that if the second one didn't specify -as, it would get ignored
+  # because 'foobar' was already queued to be installed.
+
 =head1 SEE ALSO
 
-Exporter::Tiny
+L<Exporter::Tiny>
 
-Export::Declare
+L<Sub::Exporter>
 
-Badger::Exporter
+L<Export::Declare>
 
-Sub::Exporter
+L<Badger::Exporter>
+
+=cut
