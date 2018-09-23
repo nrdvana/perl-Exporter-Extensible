@@ -320,7 +320,7 @@ sub exporter_apply_inline_config {
 }
 
 sub unimport {
-	# If first option is a hashref (global options), merge that with { un => 1 }
+	# If first option is a hashref (global options), merge that with { no => 1 }
 	my %opts= ( (ref $_[1] eq 'HASH'? %{splice(@_,1,1)} : () ), no => 1 );
 	# Use this as the global options
 	splice @_, 1, 0, \%opts;
@@ -425,7 +425,7 @@ sub exporter_get_tag_members {
 			if (!ref $filter) {
 				@$list= grep $_ ne $filter, @$list;
 			}
-			elsif (ref $filter eq 'RegExp') {
+			elsif (ref $filter eq 'Regexp') {
 				@$list= grep $_ !~ $filter, @$list;
 			}
 			elsif (ref $filter eq 'CODE') {
@@ -740,11 +740,25 @@ Package name or hashref to which all symbols will be exported.  Defaults to C<ca
 
 Empty scalar-ref whose scope determines when to unimport the things just imported.
 After a successful import, this wil be assigned a scope-guard object whose destructor
-un-imports those same symbols.
+un-imports those same symbols.  This saves you the hassle of calling "no MyModule @args".
+
+  {
+    use MyModule { scope => \my $scope }, ':sugar_methods';
+	# use sugar methods
+	...
+	# you could "undef $scope" if you want them removed sooner
+  }
+  # All those symbols are now neatly removed from your package
 
 =item not
 
-Only applies to tags.  Can be a list, regex, or coderef that filters out un-wanted imports.
+Only applies to tags.  Can be a scalar, regex, coderef, or list of any of those that filters
+out un-wanted imports.
+
+  use MyModule ':foo' => { -not => 'log' };
+  use MyModule ':foo' => { -not => qr/^log/ };
+  use MyModule ':foo' => { -not => sub { $forbidden{$_} } };
+  use MyModule ':foo' => { -not => [ 'log', qr/^log/, sub { ... } ] };
 
 =item no
 
