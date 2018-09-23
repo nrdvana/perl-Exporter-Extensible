@@ -241,6 +241,7 @@ sub exporter_uninstall {
 	}
 }
 
+sub exporter_config_into      { $_[0]{into}=      $_[1] if @_ > 1; $_[0]{into};      }
 sub exporter_config_prefix    { $_[0]{prefix}=    $_[1] if @_ > 1; $_[0]{prefix};    }
 sub exporter_config_suffix    { $_[0]{suffix}=    $_[1] if @_ > 1; $_[0]{suffix};    }
 sub exporter_config_as        { $_[0]{as}=        $_[1] if @_ > 1; $_[0]{as};        }
@@ -367,20 +368,33 @@ sub exporter_get_tag_members {
 	# Make the common case fast
 	my $list= $EXPORT_TAGS_PKG_CACHE{$class}{$tagname};
 	if (!$list && !exists $EXPORT_TAGS_PKG_CACHE{$class}{$tagname}) {
-		# Collect all members of this tag from any parent class, but stop at the first coderef
-		my $dynamic;
-		no strict 'refs';
-		$list= [];
+		# Collect all members of this tag from any parent class, but stop at the first undef
+		my ($dynamic, @keep, %seen);
 		for (@{ mro::get_linear_isa($class) }) {
-			my $tag= ${$_.'::EXPORT_TAGS'}{$tagname} or next;
-			if (ref $tag ne 'ARRAY') {
+			no strict 'refs';
+			my $add= ${$_.'::EXPORT_TAGS'}{$tagname} or do {
+				next unless $tagname eq 'all';
+				# Auto-derive ':all' from the keys of %EXPORT
+				# Also exclude anything exported as part of the Exporter API, but right now that is only
+				# the '-exporter_setup' option.
+				push @keep, grep $_ =~ /^[^-:]/ && !$seen{$_}++, keys %{$_.'::EXPORT'};
+				next;
+			};
+			if (ref $add ne 'ARRAY') {
 				# Found a generator (coderef or method name).  Call it to get the list of tags.
-				push @$list, @{ $self->$tag(delete $self->{generator_arg}) };
+				$add= $self->$add($self->{generator_arg});
 				++$dynamic;
-				last;
 			}
-			push @$list, @$tag;
+			# If first element of the list is undef it means this class wanted to reset the tag.
+			# Since we're iterating *up* the hierarchy, it just means end here.
+			my $start= (@$add && !defined $add->[0])? 1 : 0;
+			# symbol might be followed by options, so need to skip over refs, but also need to allow
+			# duplicate symbols if they were followed by a ref.
+			(ref $add->[$_] || !$seen{$add->[$_]}++ || ref $add->[$_+1]) && push @keep, $add->[$_]
+				for $start .. $#$add;
+			last if $start;
 		}
+		$list= \@keep;
 		$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $list unless $dynamic;
 	}
 	# Apply "not" exclusions
