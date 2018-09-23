@@ -306,7 +306,7 @@ sub exporter_apply_inline_config {
 	# Else clone and apply temporary settings
 	my $self2= bless { %$self, parent => $self }, ref $self;
 	for my $k (@for_global_config) {
-		my $setter= $self2->can('export_config_'.substr($k,1))
+		my $setter= $self2->can('exporter_config_'.substr($k,1))
 			or _croak("No such exporter configuration '$k'");
 		$self2->$setter($conf->{$k});
 	}
