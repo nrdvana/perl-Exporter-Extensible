@@ -148,7 +148,7 @@ sub import {
 	unless ($self->{parent}) {
 		# Install might actually be uninstall.  It also might be overridden by the user.
 		# The exporter_combine_config sets this up so we don't need to think about details.
-		my $method= $self->{installer} || ($self->{un}? 'exporter_uninstall' : 'exporter_install');
+		my $method= $self->{installer} || ($self->{no}? 'exporter_uninstall' : 'exporter_install');
 		# Convert
 		#    { foo => { SCALAR => \$foo, HASH => \%foo } }
 		# into
@@ -180,32 +180,28 @@ sub Exporter::Extensible::UnimportScopeGuard::DESTROY {
 sub exporter_install {
 	my $self= shift;
 	my $into= $self->{into} or _croak "'into' must be defined before exporter_install";
+	return $self->_exporter_install_to_ref(@_) if ref $into;
 	my $replace= $self->{replace} || 'warn';
+	no strict 'refs';
+	my $stash= \%{$into.'::'};
 	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
 	for (my $i= 0; $i < @$list; $i+= 2) {
 		my ($name, $ref)= @{$list}[$i..1+$i];
 		my $pkg_dest= $into.'::'.$name;
 		# Each value is either a hashref with keys matching the parts of a typeglob,
 		# or it is a single ref that can be assigned directly to the typeglob.
-		no strict 'refs';
 		no warnings 'redefine';
-		if ($replace ne 1) {
-			my $conflict;
-			if (ref $ref eq 'GLOB') {
-				my $stash= \%{$into.'::'};
-				$conflict= $stash->{$name} && $stash->{$name} ne *$ref;
-			}
+		if (defined $stash->{$name} and $replace ne 1) {
 			# there is actually no way I know of to test existence of *foo{SCALAR}.
 			# It auto-vivifies when accessed.
-			elsif (ref $ref ne 'SCALAR') {
-				$conflict= *$pkg_dest{ref $ref} && *$pkg_dest{ref $ref} != $ref;
-			}
+			my $conflict= (ref $ref eq 'GLOB')? $stash->{$name} ne *$ref
+				: (ref $ref eq 'SCALAR')? 0 # TODO: How to test existence of *foo{SCALAR} ?  It auto-vivifies
+				: (*$pkg_dest{ref $ref} && *$pkg_dest{ref $ref} != $ref);
 			if ($conflict) {
 				next if $replace eq 'skip';
-				my $msg= ($replace eq 'warn'? "Overwriting '" : "Refusing to overwrite '")
-					. $reftype_to_sigil{ref $ref} . $pkg_dest
-					. "' with $ref from " . ref($self);
-				$replace eq 'warn'? _carp($msg) : _croak($msg);
+				$name= $reftype_to_sigil{ref $ref} . $name; # include sigil for user's benefit
+				$replace eq 'warn'? _carp("Overwriting '$name' with $ref from ".ref($self))
+					: _croak("Refusing to overwrite '$name' with $ref from ".ref($self));
 			}
 		}
 		*$pkg_dest= $ref;
@@ -215,6 +211,7 @@ sub exporter_install {
 sub exporter_uninstall {
 	my $self= shift;
 	my $into= $self->{into} or _croak "'into' must be defined before exporter_uninstall";
+	return $self->_exporter_install_to_ref(@_) if ref $into;
 	no strict 'refs';
 	my $stash= \%{$into.'::'};
 	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
@@ -231,7 +228,6 @@ sub exporter_uninstall {
 		else {
 			my $pkg_dest= $into.'::'.$name;
 			# If the value we installed is no longer there, do nothing
-			print "# ref=$ref \n";
 			next unless $ref == (*{$pkg_dest}{ref $ref}||0);
 			# Remove old typeglob, then copy all slots except reftype back to that typeglob name
 			my $old= delete $stash->{$name};
@@ -241,11 +237,34 @@ sub exporter_uninstall {
 	}
 }
 
+sub _exporter_install_to_ref {
+	my $self= shift;
+	my $into= $self->{into};
+	ref $into eq 'HASH' or _croak("'into' must be a hashref");
+	my $replace= $self->{replace} || 'warn';
+	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
+	for (my $i= 0; $i < @$list; $i+= 2) {
+		my ($name, $ref)= @{$list}[$i..1+$i];
+		$name= $reftype_to_sigil{ref $ref} . $name; # include sigil when installing to hashref
+		if ($self->{no}) {
+			delete $into->{$name};
+		}
+		else {
+			if (defined $into->{$name} && $into->{name} != $ref) {
+				$replace eq 'skip' and next;
+				$replace eq 'warn' and _carp("Overwriting '$name' with $ref from ".ref($self));
+				$replace eq 'die' and _croak("Refusing to overwrite '$name' with $ref from ".ref($self));
+			}
+			$into->{$name}= $ref;
+		}
+	}
+}
+
 sub exporter_config_into      { $_[0]{into}=      $_[1] if @_ > 1; $_[0]{into};      }
 sub exporter_config_prefix    { $_[0]{prefix}=    $_[1] if @_ > 1; $_[0]{prefix};    }
 sub exporter_config_suffix    { $_[0]{suffix}=    $_[1] if @_ > 1; $_[0]{suffix};    }
 sub exporter_config_as        { $_[0]{as}=        $_[1] if @_ > 1; $_[0]{as};        }
-sub exporter_config_un        { $_[0]{un}=        $_[1] if @_ > 1; $_[0]{un};        }
+sub exporter_config_no        { $_[0]{no}=        $_[1] if @_ > 1; $_[0]{no};        }
 sub exporter_config_scope     { $_[0]{scope}=     $_[1] if @_ > 1; $_[0]{scope};     }
 sub exporter_config_not       { $_[0]{not}=       $_[1] if @_ > 1; $_[0]{not};       }
 sub exporter_config_installer { $_[0]{installer}= $_[1] if @_ > 1; $_[0]{installer}; }
@@ -302,7 +321,7 @@ sub exporter_apply_inline_config {
 
 sub unimport {
 	# If first option is a hashref (global options), merge that with { un => 1 }
-	my %opts= ( (ref $_[1] eq 'HASH'? %{splice(@_,1,1)} : () ), un => 1 );
+	my %opts= ( (ref $_[1] eq 'HASH'? %{splice(@_,1,1)} : () ), no => 1 );
 	# Use this as the global options
 	splice @_, 1, 0, \%opts;
 	goto $_[0]->can('import'); # to preserve caller
