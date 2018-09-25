@@ -48,7 +48,7 @@ sub import {
 		if ref $_[0] eq 'HASH';
 	
 	# Quick access to these fields
-	my $inventory= ($EXPORT_PKG_CACHE{ref $self} ||= {});
+	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
 	my $install= $self->{install_set} ||= {};
 	
 	for (my $i= 0; $i < @_;) {
@@ -368,7 +368,8 @@ sub exporter_register_generator {
 	$class= ref($class)||$class;
 	no strict 'refs';
 	if ($export_name =~ /^:/) {
-		${$class.'::EXPORT_TAGS'}= $method_name;
+		(${$class.'::EXPORT_TAGS'}{substr($export_name,1)} ||= $method_name) eq $method_name
+			or _croak("Cannot set generator for $export_name when that tag is already populated within this class ($class)");
 	} else {
 		${$class.'::EXPORT'}{$export_name}= \\$method_name;
 	}
@@ -462,20 +463,23 @@ sub _exporter_get_coderef_name {
 }
 
 sub _exporter_get_ref_to_package_var {
-	my ($class, $symbol)= @_;
-	my ($sigil, $name)= ($symbol =~ /^([\$\@\%\*]?)(\w+)$/)
-		or _croak("'$symbol' is not an allowed variable name");
+	my ($class, $sigil, $name)= @_;
+	unless (defined $name) {
+		($sigil, $name)= ($_[1] =~ /^([\$\@\%\*\&]?)(\w+)$/)
+			or _croak("'$_[1]' is not an allowed variable name");
+	}
 	my $reftype= $sigil_to_reftype{$sigil};
 	no strict 'refs';
-	return $reftype eq 'GLOB'? *{$class.'::'.$name} : *{$class.'::'.$name}{$reftype};
+	return undef unless ${$class.'::'}{$name};
+	return $reftype eq 'GLOB'? \*{$class.'::'.$name} : *{$class.'::'.$name}{$reftype};
 }
 
 sub _exporter_process_attribute {
 	my ($class, $coderef, $attr)= @_;
-	if ($attr =~ /^Export(\(.*?\))?$/) {
+	if ($attr =~ /^Export(?:\(\s*(.*?)\s*\))?$/) {
 		my (%tags, $subname, $export_name);
 		# If given a list in parenthesees, split on space and proces each.  Else use the name of the sub itself.
-		for my $token ($1? split(/\s+/, substr($1, 1, -1)) : ()) {
+		for my $token ($1? split(/\s+/, $1) : ()) {
 			if ($token =~ /^:(.*)$/) {
 				$tags{$1}++; # save tags until we have the export_name
 			}
@@ -489,9 +493,16 @@ sub _exporter_process_attribute {
 				$export_name ||= length $1? $token : "-$subname";
 				$class->exporter_register_option(substr($export_name,1), $subname, $2);
 			}
-			elsif ($token =~ /^=([\$\@\%\*]?(\w*))$/) {
+			elsif ($token =~ /^=(([\$\@\%\*:]?)(\w*))$/) {
 				$subname ||= _exporter_get_coderef_name($coderef);
-				$export_name ||= length $2? $1 : "$1$subname";
+				my $symbol= $1;
+				unless (length $3) {
+					my $prefix= $sigil_to_generator_prefix{$1};
+					$symbol .= substr($subname,0,length($prefix)) eq $prefix
+						? substr($subname,length($prefix))
+						: $subname;
+				}
+				$export_name ||= $symbol;
 				$class->exporter_register_generator($export_name, $subname);
 			}
 			else {
@@ -530,11 +541,11 @@ sub _exporter_export_from_caller {
 sub exporter_export {
 	my $class= shift;
 	for (my $i= 0; $i < @_;) {
+		my ($is_gen, $sigil, $name, $args, $ref);
 		my $export= $_[$i++];
 		ref $export and _croak("Expected non-ref export name at argument $i");
 		# If they provided the ref, capture it from arg list.
-		my $ref= $_[$i++] if ref $_[$i];
-		my ($is_gen, $sigil, $name, $args);
+		$ref= $_[$i++] if ref $_[$i];
 		# Common case first - ordinary functions
 		if ($export =~ /^\w+$/) {
 			$ref ||= $class->can($export) or _croak("Export '$export' not found in $class");
@@ -543,7 +554,7 @@ sub exporter_export {
 		}
 		# Next, check for generators or variables with sigils
 		elsif (($is_gen, $sigil, $name)= ($export =~ /^(=?)([\$\@\%\*]?)(\w+)$/)) {
-			$ref ||= $class->_exporter_get_ref_to_package_var($export)
+			$ref ||= $class->_exporter_get_ref_to_package_var($sigil, $name)
 				unless $is_gen;
 			if (!$ref) {
 				my $gen= $sigil_to_generator_prefix{$sigil}.$name;
@@ -565,12 +576,17 @@ sub exporter_export {
 		}
 		# Tags ":foo"
 		elsif (($is_gen, $name)= ($export =~ /^(=?):(\w+)$/)) {
-			defined $is_gen and _croak("Tags can't be generators (yet) for $export");
-			ref $ref eq 'ARRAY' or _croak("Tag name '$export' must be followed by an arrayref");
-			$class->exporter_register_tag_members($name, @$ref);
+			if ($is_gen && !$ref) {
+				my $gen= $sigil_to_generator_prefix{':'}.$name;
+				$class->can($gen)
+					or _croak("Can't find generator for tag $name : '$gen'");
+				$ref= $gen;
+			}
+			ref $ref eq 'ARRAY'? $class->exporter_register_tag_members($name, @$ref)
+				: $class->exporter_register_generator($export, $ref);
 		}
 		# Options "-foo" or "-foo(3)"
-		elsif (($name, $args)= ($export =~ /^-(\w+)(?:\(([0-9]+|\*)\))?$/)) {
+		elsif (($name, $args)= ($export =~ /^-(\w+)(?:\(([0-9]+|\*|\?)\))?$/)) {
 			if ($ref) {
 				ref $ref eq 'CODE' or (ref $ref eq 'SCALAR' and $class->can($ref= $$ref))
 					or _croak("Option '$export' must be followed by coderef or method name as scalar ref");
@@ -591,7 +607,7 @@ sub exporter_export {
 
 __END__
 
-# ABSTRACT: Create modules with exports which can be "subclassed"
+# ABSTRACT: Create easy-to-extend modules which export symbols
 
 =head1 SYNOPSIS
 
