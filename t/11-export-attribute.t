@@ -1,7 +1,6 @@
 #! /usr/bin/env perl
 use strict;
 use warnings;
-no warnings 'once', 'redefine';
 use Test::More;
 use Scalar::Util 'weaken';
 

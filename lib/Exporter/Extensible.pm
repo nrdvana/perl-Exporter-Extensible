@@ -190,7 +190,6 @@ sub exporter_install {
 		my $pkg_dest= $into.'::'.$name;
 		# Each value is either a hashref with keys matching the parts of a typeglob,
 		# or it is a single ref that can be assigned directly to the typeglob.
-		no warnings 'redefine';
 		if (defined $stash->{$name} and $replace ne 1) {
 			# there is actually no way I know of to test existence of *foo{SCALAR}.
 			# It auto-vivifies when accessed.
@@ -204,6 +203,7 @@ sub exporter_install {
 					: _croak("Refusing to overwrite '$name' with $ref from ".ref($self));
 			}
 		}
+		no warnings 'redefine';
 		*$pkg_dest= $ref;
 	}
 }
@@ -371,7 +371,8 @@ sub exporter_register_generator {
 		(${$class.'::EXPORT_TAGS'}{substr($export_name,1)} ||= $method_name) eq $method_name
 			or _croak("Cannot set generator for $export_name when that tag is already populated within this class ($class)");
 	} else {
-		${$class.'::EXPORT'}{$export_name}= \\$method_name;
+		# If method name is a scalar, make it a scalar-ref-ref.  If it is a coderef, make it a coderef-ref
+		${$class.'::EXPORT'}{$export_name}= ref $method_name? \$method_name : \\$method_name;
 	}
 }
 
@@ -401,8 +402,12 @@ sub exporter_get_tag_members {
 				next;
 			};
 			if (ref $add ne 'ARRAY') {
-				# Found a generator (coderef or method name).  Call it to get the list of tags.
+				# Found a generator (coderef or method name ref).  Call it to get the list of tags.
+				$add= ref $add eq 'CODE'? $add
+					: ref $add eq 'SCALAR'? $$add
+					: _croak("Tag must expand to an array, code, or a method name ref");
 				$add= $self->$add($self->{generator_arg});
+				ref $add eq 'ARRAY' or _croak("Tag generator must return an arrayref");
 				++$dynamic;
 			}
 			# If first element of the list is undef it means this class wanted to reset the tag.
