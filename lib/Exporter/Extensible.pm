@@ -918,14 +918,14 @@ refs.  If the value is omitted, C<export> attempts to do-what-you-mean to find i
 
 =item C<< foo => \&CODE >>
 
-This declares a normal exported function.  If the ref is omitted, C<export> looks for it in the
-hierarchy of the current package.  Note that this lookup happens immediately, and packages
-derived from this cannot override C<foo> and have that be exported in its place.
+This declares a normal exported function.  If the ref is omitted, C<export> looks for it in
+the the current package.  Note that this lookup happens immediately, so derived packages that
+want to override C<foo> must re-declare it.
 
 =item C<< '$foo' => \$SCALAR >>, C<< '@foo' => \@ARRAY >>, C<< '%foo' => \%HASH >>, C<< '*foo' => \*GLOB >>
 
 This exports a normal variable or typeglob.  If the ref is omitted, C<export> looks for it
-in the hierarchy of the current package.
+in the current package.
 
 =item C<< -foo => $CODEREF >> or C<< -foo => \"methodname" >>
 
