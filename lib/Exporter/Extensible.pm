@@ -30,10 +30,10 @@ our %reftype_to_sigil= (
 	'CODE'   => '',
 );
 our %sigil_to_generator_prefix= (
-	'$' => '_generateSCALAR_',
-	'@' => '_generateARRAY_',
-	'%' => '_generateHASH_',
-	'*' => '_generateGLOB_',
+	'$' => '_generateScalar_',
+	'@' => '_generateArray_',
+	'%' => '_generateHash_',
+	'*' => '_generateGlob_',
 	'&' => '_generate_',
 	''  => '_generate_',
 );

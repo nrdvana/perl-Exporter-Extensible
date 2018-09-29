@@ -15,6 +15,8 @@ ok( eval q{
 	sub gamma { 'g' }
 	sub delta { 'd' }
 	sub _generate_delta { sub { 'd' } }
+	sub _generateArray_epsillon { [ 'e' ] }
+	sub _generateGlob_zeta { open my $fh, '>+', \""; $fh; }
 	our $scalar;
 	our @array;
 	our %hash;
@@ -60,6 +62,14 @@ my @tests= (
 	[ 'export a generator - 2',
 		['delta' => \\'_generate_delta' ],
 		{ delta => \\'_generate_delta' },
+	],
+	[ 'export an array generator',
+		['=@epsillon'],
+		{ '@epsillon' => \\'_generateArray_epsillon' },
+	],
+	[ 'export a typeglob generator',
+		['=*zeta'],
+		{ '*zeta' => \\'_generateGlob_zeta' },
 	],
 	[ 'export an option',
 		['-gamma'],
