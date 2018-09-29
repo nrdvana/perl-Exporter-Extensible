@@ -907,29 +907,29 @@ refs.  If the value is omitted, C<export> attempts to do-what-you-mean to find i
 
 =over
 
-=item 'foo' => \&CODE
+=item C<< foo => \&CODE >>
 
 This declares a normal exported function.  If the ref is omitted, C<export> looks for it in the
 hierarchy of the current package.  Note that this lookup happens immediately, and packages
 derived from this cannot override C<foo> and have that be exported in its place.
 
-=item '$foo' => \$SCALAR, '@foo' => \@ARRAY, '%foo' => \%HASH, '*foo' => \*GLOB
+=item C<< '$foo' => \$SCALAR >>, C<< '@foo' => \@ARRAY >>, C<< '%foo' => \%HASH >>, C<< '*foo' => \*GLOB >>
 
 This exports a normal variable or typeglob.  If the ref is omitted, C<export> looks for it
-in the current package.
+in the hierarchy of the current package.
 
-=item '-foo' => $CODEREF or '-foo' => \"methodname"
+=item C<< -foo => $CODEREF >> or C<< -foo => \"methodname" >>
 
 This differs from a normal exported function in that it will execute the coderef at import time,
 and sub-packages B<can> override it, since it gets called as a method.  The default is to derive
 the method name by removing the C<->.
 
-=item ':foo' => \@LIST
+=item C<< ':foo' => \@LIST >>
 
 Declaring a tag is nothing special; just give it an arrayref of what should be imported when
 the tag is encountered.
 
-=item '=$foo' => $CODEREF or '=$foo' => \"methodname"
+=item C<< '=$foo' => $CODEREF >> or C<< '=$foo' => \"methodname" >>
 
 Prefixing an export name with an equal sign means you want to generate the export on the fly.
 The ref is understood to be the coderef or method name to call (as a method) which will return
@@ -988,23 +988,23 @@ L</export> function.  You may include one or more of the following in the parent
 
 =over
 
-=item 'foo'
+=item C<< foo >>
 
 This indicates the export-name of a sub.  A sub may be exported as more than one name.
 Note that the first name in the list becomes the official name (ignoring the actual name of
 the sub) which will be added to any tags you listed.
 
-=item ':foo'
+=item C<< :foo >>
 
 This requests that the export-name get added to the named tag.  You may specify any number of
 tags.
 
-=item '-', '-(N)', '-foo', '-foo(N)'
+=item C<< - >>, C<< -(N) >>, C<< -foo >>, C<< -foo(N) >>
 
 This sets up the sub as an option, capturing N arguments.  In the cases without a name, the
 name of the sub is used.  N may be C<'*'> or C<'?'>; see L</IMPLEMENTING OPTIONS>.
 
-=item '=', '=$', '=@', '=%', '=*', '=foo', '=$foo', ...
+=item C<< = >>, C<< =$ >>, C<< =@ >>, C<< =% >>, C<< =* >>, C<< =foo >>, C<< =$foo >>, ...
 
 This sets up the sub as a generator for the export-name.  If the word portion of the name is
 omitted, it is taken to be the sub name minus the prefix "_generate_" or "_generate$REFTYPE_".
