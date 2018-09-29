@@ -805,7 +805,7 @@ Determines what to do if the symbol already exists in the target package:
 
 =over
 
-=item 1
+=item C<1>
 
 Replace the symbol with no warning.
 
@@ -1062,13 +1062,13 @@ option decide how many arguments to consume.  So, the API is as follows:
   # By default, no arguments are captured.  A ref may not follow this option.
   sub name : Export( -name ) {
     my $exporter= shift;
-	...
+    ...
   }
   
   # Ask for three arguments (regardless of whether they are refs)
   sub name : Export( -name(3) ) {
-     my ($exporter, $arg1, $arg2, $arg3)= @_;
-	 ...
+    my ($exporter, $arg1, $arg2, $arg3)= @_;
+    ...
   }
   
   # Ask for one argument but only if it is a ref of some kind.
@@ -1077,16 +1077,16 @@ option decide how many arguments to consume.  So, the API is as follows:
     my ($exporter, $maybe_arg)= @_;
     ...
   }
-
+  
   # Might need any number of arguments.  Return the number we consumed.
   sub name : Export( -name(*) ) {
     my $exporter = shift;
-	while (@_) {
-	   last if ...;
-	   ...
-	   ++$consumed;
+    while (@_) {
+      last if ...;
+      ...
+      ++$consumed;
     }
-	return $consumed;
+    return $consumed;
   }
 
 The first argument C<$exporter> is a instance of the exporting package, and you can inspect it
@@ -1111,8 +1111,8 @@ generator can retrieve the values from there.
   export(
     # be sure to use names that won't conflict with Exporter::Extensible's internals
     '-foo(1)' => sub { shift->{foo}= shift },
-	'-bar(1)' => sub { shift->{bar}= shift },
-	'=foobar' => sub { my $foobar= $_[0]{foo} . $_[0]{bar}; sub { $foobar } },
+    '-bar(1)' => sub { shift->{bar}= shift },
+    '=foobar' => sub { my $foobar= $_[0]{foo} . $_[0]{bar}; sub { $foobar } },
   );
   
   package User;
