@@ -65,6 +65,7 @@ ok( eval q{
 	);
 	our %EXPORT_TAGS= (
 		group1 => [ 'code_child2' ],
+		default => [ 'code_child2' ],
 	);
 	sub code { 3 }
 	sub opt {
@@ -159,6 +160,7 @@ sub test_inherited_tags {
 		[ Child2  => group1 => [ 'code', 'code_child2' ] ],
 		[ MultInherit => group1 => [ 'code', 'code_child1', 'code_child2' ] ],
 		[ MultInherit => all    => [ '$scalar', '@array', '%hash', 'code', 'code_child1', 'code_child2' ] ],
+		[ MultInherit => default => [ 'code_child2' ] ],
 	);
 	for (@tests) {
 		my ($pkg, $tag, $expected)= @$_;

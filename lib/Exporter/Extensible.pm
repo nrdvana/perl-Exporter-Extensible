@@ -54,6 +54,8 @@ sub import {
 	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
 	my $install= $self->{install_set} ||= {};
 	
+	unshift @_, $self->exporter_get_tag_members('default')
+		unless @_;
 	for (my $i= 0; $i < @_;) {
 		my $symbol= $_[$i++];
 		my ($sigil, $name)= ($symbol =~ /^([-:\$\@\%\*]?)(.*)/); # should always match
@@ -408,7 +410,7 @@ sub exporter_get_tag_members {
 				# Found a generator (coderef or method name ref).  Call it to get the list of tags.
 				$add= ref $add eq 'CODE'? $add
 					: ref $add eq 'SCALAR'? $$add
-					: _croak("Tag must expand to an array, code, or a method name ref");
+					: _croak("Tag must expand to an array, code, or a method name ref (not $add)");
 				$add= $self->$add($self->{generator_arg});
 				ref $add eq 'ARRAY' or _croak("Tag generator must return an arrayref");
 				++$dynamic;
@@ -544,6 +546,13 @@ sub exporter_setup {
 	strict->import;
 	warnings->import;
 	if ($version == 1) {
+		# Make @EXPORT and $EXPORT_TAGS{default} be the same arrayref.
+		# Allow either one to have been declared already.
+		my $tags= \%{$self->{into}.'::EXPORT_TAGS'};
+		*{$self->{into}.'::EXPORT'}= $tags->{default}
+			if ref $tags->{default} eq 'ARRAY';
+		$tags->{default} ||= \@{$self->{into}.'::EXPORT'};
+		# Export the 'export' function.
 		*{$self->{into}.'::export'}= \&_exporter_export_from_caller;
 	}
 	elsif ($version) {
