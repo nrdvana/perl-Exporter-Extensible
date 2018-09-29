@@ -898,8 +898,12 @@ Those lines are shorthand for:
   use strict;
   use warnings;
   use parent 'Exporter::Extensible';
+  our @EXPORT;
   our %EXPORT= ( ... );
-  our %EXPORT_TAGS = ( ... );
+  our %EXPORT_TAGS = (
+    default => \@EXPORT,
+    ...
+  );
 
 Everything else below is just convenience and shorthand to make this easier.
 
@@ -1059,6 +1063,45 @@ the method name, or a ref of the coderef to execute.  For example:
 
 Again, this is subject to change, but these notations will always be supported for
 backward-compatibility.
+
+=back
+
+Meanwhile the C<%EXPORT_TAGS> variable is almost identical to the one used by Exporter, but
+with a few enhancements:
+
+=over
+
+=item C<:all>
+
+You don't need to declare the tag C<all>, because this module calculates it for you, from the
+list of all keys of C<%EXPORT> excluding tags or options.  You can override this default though.
+
+=item C<:default>
+
+C<@EXPORT> is added to C<%EXPORT_TAGS> as C<'default'>.  So, you can push items into C<@EXPORT>
+or into C<@{$EXPORT_TAGS{default}}> and it is the same arrayref.
+
+=item Resetting the Tag Members
+
+If the first element of the arrayref is C<undef>, it means "don't inherit the tag
+members from the parent class".
+
+  # Don't want to inherit members of ':foo' from parent:
+  foo => [ undef, 'x', 'y', 'z' ]
+
+=item Data in a Tag
+
+The elements of a tag can include parameters to generators, or arguments to an option, etc;
+anything that could be passed to C<import> will work as expected.
+
+  foo => [ 'x', 'y', -init => [1,2,3] ],
+
+=item Generators
+
+If the value in C<%EXPORT_TAGS> is not an arrayref, then it should be a REF-ref of either the
+scalar name of a generator, or a coderef of the generator.
+
+  foo => \\"_generate_foo",
 
 =back
 
