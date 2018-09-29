@@ -2,6 +2,7 @@ package Exporter::Extensible;
 use strict;
 use warnings;
 require MRO::Compat if $] lt '5.009005';
+require mro;
 
 our %EXPORT_PKG_CACHE;
 our %EXPORT_TAGS_PKG_CACHE;
