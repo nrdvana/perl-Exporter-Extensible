@@ -1,4 +1,6 @@
 package Exporter::Extensible;
+
+use v5.12;
 use strict;
 use warnings;
 require MRO::Compat if $] lt '5.009005';
@@ -794,6 +796,8 @@ out un-wanted imports.
 =item no
 
 If true, then the list of symbols will be uninstalled from the C<into> package.
+For example, C<< no MyModule @args >> is the same as
+C<< MyModule->import({ no => 1 }, @args) >>
 
 =item replace
 
