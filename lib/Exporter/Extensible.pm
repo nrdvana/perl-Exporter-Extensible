@@ -459,13 +459,22 @@ sub MODIFY_CODE_ATTRIBUTES {
 }
 
 sub _exporter_get_coderef_name {
-	my $coderef= shift;
-	# This code is borrowed from Sub::Identify
-	require B;
-	my $cv= B::svref_2object($coderef);
-	$cv->isa('B::CV') && !$cv->GV->isa('B::SPECIAL')
-		or _croak("Can't determine export name of $coderef");
-	return $cv->GV->NAME;
+	# Sub::Identify has an XS version that we take advantage of if available
+	my $impl= (eval 'require Sub::Identify;1')? sub {
+			&Sub::Identify::sub_name
+				or _croak("Can't determine export name of $_[0]");
+		}
+		: do {
+			require B;
+			sub {
+				my $cv= &B::svref_2object;
+				$cv->isa('B::CV') && !$cv->GV->isa('B::SPECIAL') && $cv->GV->NAME
+					or _croak("Can't determine export name of $_[0]");
+			};
+		};
+	no warnings 'redefine';
+	*_exporter_get_coderef_name= $impl;
+	$impl->(shift);
 }
 
 sub _exporter_get_ref_to_package_var {
