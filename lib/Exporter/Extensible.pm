@@ -63,12 +63,16 @@ sub import {
 		
 		# If it is a tag, then recursively call import on that list
 		if ($sigil eq ':') {
-			my $self2= $self;
 			# If followed by a hashref, add those options to the current ones.
-			$self2= $self->exporter_apply_inline_config($_[$i++])
-				if ref $_[$i] eq 'HASH';
-			my @tag_list= $self2->exporter_get_tag_members($name);
-			$self2->import(@tag_list) if @tag_list; # only if the tags weren't all excluded
+			if (ref $_[$i] eq 'HASH') {
+				_croak("can't apply -as to a tag") if exists $_[$i]{-as}; # this needed to ensure next line creates a clone
+				my $self2= $self->exporter_apply_inline_config($_[$i++]);
+				my @tag_list= $self2->exporter_get_tag_members($name);
+				$self2->import(@tag_list) if @tag_list;
+			}
+			else {
+				splice(@_, $i, 0, $self->exporter_get_tag_members($name));
+			}
 			next;
 		}
 		# Else, it is an option or plain symbol to be exported
@@ -305,7 +309,7 @@ sub exporter_apply_inline_config {
 	my ($self, $conf)= @_;
 	my @for_global_config= grep /^-/, keys %$conf;
 	# In the event that only "-as" was given, we don't actually need to create a new object
-	if (@for_global_config == 1 && $for_global_config[0] eq '-as') {
+	if (@for_global_config == 1 && $for_global_config[0] eq '-as' && keys %$conf == 1) {
 		$self->exporter_config_as($conf->{-as});
 		return $self;
 	}
