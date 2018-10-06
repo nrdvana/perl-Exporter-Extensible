@@ -49,6 +49,7 @@ sub import {
 	# Optional config hash might be given as first argument
 	$self= $self->exporter_apply_global_config(shift)
 		if ref $_[0] eq 'HASH';
+	$self->{todo}= \@_;
 	
 	# Quick access to these fields
 	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
@@ -446,6 +447,12 @@ sub exporter_get_tag_members {
 		}
 	}
 	@$list;
+}
+
+sub exporter_also_import {
+	my $self= shift;
+	ref $self && $self->{todo} or _croak('exporter_also_import can onnly be called on $self during an import()');
+	push @{$self->{todo}}, @_;
 }
 
 my %method_attrs;
@@ -1142,7 +1149,20 @@ option decide how many arguments to consume.  So, the API is as follows:
   }
 
 The first argument C<$exporter> is a instance of the exporting package, and you can inspect it
-or even reconfigure it.
+or even reconfigure it.  For instance, if you want your option to automatically select some
+symbols as if they had been passed to L</import>, you could call L</exporter_also_import>.
+
+=head2 exporter_also_import
+
+This method can be used *during* a call to C<import> for an option or generator to request that
+aditional things be imported into the caller as if the caller ad requested them on the import
+line.  For example:
+
+  sub foo : Export(-) {
+    shift->exporter_also_import(':all');
+  }
+
+This causes the option C<-foo> to be equivalent to the tag C<':all'>;
 
 =head1 IMPLEMENTING GENERATORS
 
