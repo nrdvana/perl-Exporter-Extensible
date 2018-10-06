@@ -553,6 +553,8 @@ sub exporter_setup {
 	strict->import;
 	warnings->import;
 	if ($version == 1) {
+		# Declare 'our %EXPORT'
+		*{$self->{into}.'::EXPORT'}= \%{$self->{into}.'::EXPORT'};
 		# Make @EXPORT and $EXPORT_TAGS{default} be the same arrayref.
 		# Allow either one to have been declared already.
 		my $tags= \%{$self->{into}.'::EXPORT_TAGS'};
@@ -905,12 +907,9 @@ Those lines are shorthand for:
   use strict;
   use warnings;
   use parent 'Exporter::Extensible';
-  our @EXPORT;
-  our %EXPORT= ( ... );
-  our %EXPORT_TAGS = (
-    default => \@EXPORT,
-    ...
-  );
+  our (@EXPORT, %EXPORT, %EXPORT_TAGS);
+  $EXPORT_TAGS{default} ||= \@EXPORT;
+  $EXPORT{...}= ...; # for each argument to export()
 
 Everything else below is just convenience and shorthand to make this easier.
 
