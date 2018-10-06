@@ -857,7 +857,7 @@ Prefix all imported names with this string.
 
 =item suffix (or -suffix)
 
-Append this string to all imported named.
+Append this string to all imported names.
 
 =back
 
@@ -876,7 +876,7 @@ Install the thing as this exact name. (no sigil, but relative to C<into>)
 
 Same as global option C<prefix>, limited to this one tag.
 
-=item -suffix => $suffix
+=item -suffix
 
 Same as global option C<suffix>, limited to this one tag.
 
@@ -936,7 +936,9 @@ want to override C<foo> must re-declare it.
 =item C<< '$foo' => \$SCALAR >>, C<< '@foo' => \@ARRAY >>, C<< '%foo' => \%HASH >>, C<< '*foo' => \*GLOB >>
 
 This exports a normal variable or typeglob.  If the ref is omitted, C<export> looks for it
-in the current package.
+in the current package. Note: this exports a B<global variable which can be modified>.
+In general, that's bad practice, but might be desired for efficiency.  If your goal is
+efficient access to a singleton object, consider a generator instead like C<=$foo>.
 
 =item C<< -foo => $CODEREF >> or C<< -foo => \"methodname" >>
 
@@ -954,7 +956,7 @@ the tag is encountered.
 Prefixing an export name with an equal sign means you want to generate the export on the fly.
 The ref is understood to be the coderef or method name to call (as a method) which will return
 the ref of the correct type to be exported.  The default is to look for C<_generate_foo>,
-C<_generateSCALAR_foo>, C<_generateARRAY_foo>, C<_generateHASH_foo>, etc.
+C<_generateScalar_foo>, C<_generateArray_foo>, C<_generateHash_foo>, etc.
 
 =back
 
@@ -1168,7 +1170,7 @@ This causes the option C<-foo> to be equivalent to the tag C<':all'>;
 
 A generator is just a function that returns the thing to be imported.  A generator is called as:
 
-  $generator->($exporter, $symbol, $args);
+  $exporter->$generator($symbol, $args);
 
 where C<$exporter> is an instance of your package, C<$symbol> is the name of the thing
 as specified to C<import> (with sigil) and C<$args> is the optional hashref the user might have
@@ -1182,8 +1184,8 @@ generator can retrieve the values from there.
   use Exporter::Extensible -exporter_setup => 1;
   export(
     # be sure to use names that won't conflict with Exporter::Extensible's internals
-    '-foo(1)' => sub { shift->{foo}= shift },
-    '-bar(1)' => sub { shift->{bar}= shift },
+    '-foo(1)' => sub { $_[0]{foo}= $_[1] },
+    '-bar(1)' => sub { $_[0]{bar}= $_[1] },
     '=foobar' => sub { my $foobar= $_[0]{foo} . $_[0]{bar}; sub { $foobar } },
   );
   
