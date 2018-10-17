@@ -410,7 +410,8 @@ sub _exporter_build_tag_cache {
 	my ($dynamic, @keep, %seen, $known);
 	for (@{ mro::get_linear_isa($class) }) {
 		no strict 'refs';
-		my $add= ${$_.'::EXPORT_TAGS'}{$tagname} || $_->exporter_autoload_tag($tagname)
+		my $add= ${$_.'::EXPORT_TAGS'}{$tagname}
+			|| ($_->can('exporter_autoload_tag') && $_->exporter_autoload_tag($tagname))
 			or next;
 		++$known;
 		if (ref $add ne 'ARRAY') {
