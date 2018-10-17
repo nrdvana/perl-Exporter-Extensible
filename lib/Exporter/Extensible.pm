@@ -411,7 +411,12 @@ sub _exporter_build_tag_cache {
 	for (@{ mro::get_linear_isa($class) }) {
 		no strict 'refs';
 		my $add= ${$_.'::EXPORT_TAGS'}{$tagname}
-			|| ($_->can('exporter_autoload_tag') && $_->exporter_autoload_tag($tagname))
+			# Special case, ':all' is built from all known keys of the %EXPORT var at each inherited package
+			# Also exclude anything exported as part of the Exporter API, but right now that is only
+			# the '-exporter_setup' option.
+			|| ($tagname eq 'all' && *{$_.'::EXPORT'}{HASH}
+				&& [ grep $_ =~ /^[^-:]/, keys %{$_.'::EXPORT'} ]
+			)
 			or next;
 		++$known;
 		if (ref $add ne 'ARRAY') {
@@ -432,7 +437,7 @@ sub _exporter_build_tag_cache {
 			for $start .. $#$add;
 		last if $start;
 	}
-	my $ret= $known? \@keep : undef;
+	my $ret= $known? \@keep : $self->exporter_autoload_tag($tagname);
 	$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $ret
 		unless $dynamic;
 	return $ret;
@@ -470,13 +475,6 @@ sub _exporter_is_excluded {
 
 sub exporter_autoload_tag {
 	my ($self, $tagname)= @_;
-	if ($tagname eq 'all') {
-		# Auto-derive ':all' from the keys of %EXPORT, excluding "-" options
-		# Also exclude anything exported as part of the Exporter API, but right now that is only
-		# the '-exporter_setup' option.
-		no strict 'refs';
-		return [ grep $_ =~ /^[^-:]/, keys %{(ref($self)||$self).'::EXPORT'} ];
-	}
 	return;
 }
 
@@ -1245,10 +1243,10 @@ you should call C<next::method> if you don't recognize the symbol.
 
 This takes a tag name (no sigil) and returns an arrayref of items which should be added to the
 tag.  The combined tag members are cached, but not added to the package C<%EXPORT_TAGS>.
-This method is called B<on each class in the package hierarchy> which doesn't define the tag,
-since the tag is an aggregate of all the members throughout the hierarchy, so you might want to
-only return an arrayref if C<$self> is the package where you wrote your method.  Be sure to call
-C<next::method> to handle generic tags that come from parent classes, like C<':all'>.
+This method is called only if no package in the hierarchy defined the tag, which could cause
+confusion if a derived class wants to add a few symbols to a tag which is otherwise autoloaded
+by a parent.  This method is called once at the end of iterating the package hierarchy, so
+you should call C<next::method> to collect any inherited autoloaded members of this tag.
 
 =head1 SEE ALSO
 
