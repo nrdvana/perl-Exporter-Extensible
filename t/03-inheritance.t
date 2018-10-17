@@ -164,7 +164,7 @@ sub test_inherited_tags {
 	);
 	for (@tests) {
 		my ($pkg, $tag, $expected)= @$_;
-		is_deeply( [ sort $pkg->exporter_get_tag_members($tag) ], [ sort @$expected ], "$pkg\'s $tag" );
+		is_deeply( [ sort @{$pkg->exporter_get_tag($tag)} ], [ sort @$expected ], "$pkg\'s $tag" );
 	}
 }
 

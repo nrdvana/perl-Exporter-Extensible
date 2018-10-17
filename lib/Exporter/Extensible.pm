@@ -54,8 +54,9 @@ sub import {
 	# Quick access to these fields
 	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
 	my $install= $self->{install_set} ||= {};
+	my $not= $self->{not};
 	
-	unshift @_, $self->exporter_get_tag_members('default')
+	unshift @_, @{ $self->exporter_get_tag('default') || [] }
 		unless @_;
 	for (my $i= 0; $i < @_;) {
 		my $symbol= $_[$i++];
@@ -67,11 +68,14 @@ sub import {
 			if (ref $_[$i] eq 'HASH') {
 				_croak("can't apply -as to a tag") if exists $_[$i]{-as}; # this needed to ensure next line creates a clone
 				my $self2= $self->exporter_apply_inline_config($_[$i++]);
-				my @tag_list= $self2->exporter_get_tag_members($name);
-				$self2->import(@tag_list) if @tag_list;
+				my $tag_cache= $self2->exporter_get_tag($name)
+					or _croak("Tag ':$name' is not exported by ".ref($self));
+				$self2->import(@$tag_cache);
 			}
 			else {
-				splice(@_, $i, 0, $self->exporter_get_tag_members($name));
+				my $tag_cache= $self->exporter_get_tag($name)
+					or _croak("Tag ':$name' is not exported by ".ref($self));
+				splice(@_, $i, 0, @$tag_cache);
 			}
 			next;
 		}
@@ -107,6 +111,7 @@ sub import {
 			# If followed by a hashref, add those options to the current ones.
 			$self2= $self->exporter_apply_inline_config($_[$i++])
 				if ref $_[$i] eq 'HASH';
+			next if defined $not and $self->_exporter_is_excluded($symbol);
 			no warnings 'uninitialized';
 			my $dest= delete $self2->{as} || $self2->{prefix} . $name . $self2->{suffix};
 			use warnings 'uninitialized';
@@ -350,6 +355,11 @@ sub exporter_register_symbol {
 	${$class.'::EXPORT'}{$export_name}= $ref;
 }
 
+sub exporter_autoload_symbol {
+	my ($class, $export_name)= @_;
+	return;
+}
+
 sub exporter_get_inherited {
 	my ($self, $sym)= @_;
 	my $class= ref($self)||$self;
@@ -362,8 +372,8 @@ sub exporter_get_inherited {
 		return $EXPORT_PKG_CACHE{$class}{$sym}= ${$_.'::EXPORT'}{$sym}
 			if exists ${$_.'::EXPORT'}{$sym};
 	}
-	# Isn't exported.
-	return undef;
+	# Isn't exported, but maybe autoload.
+	return $self->exporter_autoload_symbol($sym);
 }
 
 sub exporter_register_option {
@@ -393,64 +403,80 @@ sub exporter_register_tag_members {
 	push @{ ${$class.'::EXPORT_TAGS'}{$tag_name} }, @_;
 }
 
-sub exporter_get_tag_members {
+sub _exporter_build_tag_cache {
+	my ($self, $tagname)= @_;
+	my $class= ref($self)||$self;
+	# Collect all members of this tag from any parent class, but stop at the first undef
+	my ($dynamic, @keep, %seen, $known);
+	for (@{ mro::get_linear_isa($class) }) {
+		no strict 'refs';
+		my $add= ${$_.'::EXPORT_TAGS'}{$tagname} || $_->exporter_autoload_tag($tagname)
+			or next;
+		++$known;
+		if (ref $add ne 'ARRAY') {
+			# Found a generator (coderef or method name ref).  Call it to get the list of tags.
+			$add= ref $add eq 'CODE'? $add
+				: ref $add eq 'SCALAR'? $$add
+				: _croak("Tag must expand to an array, code, or a method name ref (not $add)");
+			$add= $self->$add($self->{generator_arg});
+			ref $add eq 'ARRAY' or _croak("Tag generator must return an arrayref");
+			++$dynamic;
+		}
+		# If first element of the list is undef it means this class wanted to reset the tag.
+		# Since we're iterating *up* the hierarchy, it just means end here.
+		my $start= (@$add && !defined $add->[0])? 1 : 0;
+		# symbol might be followed by options, so need to skip over refs, but also need to allow
+		# duplicate symbols if they were followed by a ref.
+		(ref $add->[$_] || !$seen{$add->[$_]}++ || ref $add->[$_+1]) && push @keep, $add->[$_]
+			for $start .. $#$add;
+		last if $start;
+	}
+	my $ret= $known? \@keep : undef;
+	$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $ret
+		unless $dynamic;
+	return $ret;
+}
+
+sub exporter_get_tag {
 	my ($self, $tagname)= @_;
 	my $class= ref($self)||$self;
 	# Make the common case fast
 	my $list= $EXPORT_TAGS_PKG_CACHE{$class}{$tagname};
-	if (!$list && !exists $EXPORT_TAGS_PKG_CACHE{$class}{$tagname}) {
-		# Collect all members of this tag from any parent class, but stop at the first undef
-		my ($dynamic, @keep, %seen);
-		for (@{ mro::get_linear_isa($class) }) {
-			no strict 'refs';
-			my $add= ${$_.'::EXPORT_TAGS'}{$tagname} or do {
-				next unless $tagname eq 'all';
-				# Auto-derive ':all' from the keys of %EXPORT
-				# Also exclude anything exported as part of the Exporter API, but right now that is only
-				# the '-exporter_setup' option.
-				push @keep, grep $_ =~ /^[^-:]/ && !$seen{$_}++, keys %{$_.'::EXPORT'};
-				next;
-			};
-			if (ref $add ne 'ARRAY') {
-				# Found a generator (coderef or method name ref).  Call it to get the list of tags.
-				$add= ref $add eq 'CODE'? $add
-					: ref $add eq 'SCALAR'? $$add
-					: _croak("Tag must expand to an array, code, or a method name ref (not $add)");
-				$add= $self->$add($self->{generator_arg});
-				ref $add eq 'ARRAY' or _croak("Tag generator must return an arrayref");
-				++$dynamic;
-			}
-			# If first element of the list is undef it means this class wanted to reset the tag.
-			# Since we're iterating *up* the hierarchy, it just means end here.
-			my $start= (@$add && !defined $add->[0])? 1 : 0;
-			# symbol might be followed by options, so need to skip over refs, but also need to allow
-			# duplicate symbols if they were followed by a ref.
-			(ref $add->[$_] || !$seen{$add->[$_]}++ || ref $add->[$_+1]) && push @keep, $add->[$_]
-				for $start .. $#$add;
-			last if $start;
+	$list= $self->_exporter_build_tag_cache($tagname)
+		unless $list or exists $EXPORT_TAGS_PKG_CACHE{$class}{$tagname};
+	return $list;
+}
+
+sub _exporter_is_excluded {
+	my ($self, $symbol)= @_;
+	return unless ref $self && (my $not= $self->{not});
+	# N^2 exclusion iteration isn't cool, but doing something smarter requires a
+	# lot more setup that probably won't pay off for the usual tiny lists of 'not'.
+	for my $filter (ref $not eq 'ARRAY'? @$not : ($not)) {
+		if (!ref $filter) {
+			return 1 if $symbol eq $filter;
 		}
-		$list= \@keep;
-		$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $list unless $dynamic;
-	}
-	# Apply "not" exclusions
-	if (ref $self && (my $not= $self->{not})) {
-		$list= [ @$list ]; # clone before removing exclusions
-		# N^2 exclusion iteration isn't cool, but doing something smarter requires a
-		# lot more setup that probably won't pay off for the usual tiny lists of 'not'.
-		for my $filter (ref $not eq 'ARRAY'? @$not : ($not)) {
-			if (!ref $filter) {
-				@$list= grep $_ ne $filter, @$list;
-			}
-			elsif (ref $filter eq 'Regexp') {
-				@$list= grep $_ !~ $filter, @$list;
-			}
-			elsif (ref $filter eq 'CODE') {
-				@$list= grep !&$filter, @$list;
-			}
-			else { _croak("Unhandled 'not' filter: $filter") }
+		elsif (ref $filter eq 'Regexp') {
+			return 1 if $symbol =~ $filter;
 		}
+		elsif (ref $filter eq 'CODE') {
+			&$filter && return 1 for $symbol;
+		}
+		else { _croak("Unhandled 'not' filter: $filter") }
 	}
-	@$list;
+	return;
+}
+
+sub exporter_autoload_tag {
+	my ($self, $tagname)= @_;
+	if ($tagname eq 'all') {
+		# Auto-derive ':all' from the keys of %EXPORT, excluding "-" options
+		# Also exclude anything exported as part of the Exporter API, but right now that is only
+		# the '-exporter_setup' option.
+		no strict 'refs';
+		return [ grep $_ =~ /^[^-:]/, keys %{(ref($self)||$self).'::EXPORT'} ];
+	}
+	return;
 }
 
 sub exporter_also_import {
@@ -1197,6 +1223,31 @@ generator can retrieve the values from there.
   # This exports a sub as "foobar" which returns "abcdef", and a sub as "x" which
   # returns "xyzdef".  Note that if the second one didn't specify -as, it would get ignored
   # because 'foobar' was already queued to be installed.
+
+=head1 AUTOLOADING SYMBOLS AND TAGS
+
+In the same spirit that Perl lets you AUTOLOAD methods on demand, this exporter lets you define
+symbols and tags on demand.  Simply override one of these methods:
+
+=head2 exporter_autoload_symbol
+
+  my $ref= $self->exporter_autoload_symbol($sym);
+
+This takes a symbol (including sigil), and returns a ref which should be installed.  The ref
+is cached, but B<not> added to the package C<%EXPORT>.  If you want that to happen, you need to
+do it yourself.  This method is called once at the end of iterating the package hierarchy, so
+you should call C<next::method> if you don't recognize the symbol.
+
+=head2 exporter_autoload_tag
+
+  my $arrayref= $self->exporter_autoload_tag($name);
+
+This takes a tag name (no sigil) and returns an arrayref of items which should be added to the
+tag.  The combined tag members are cached, but not added to the package C<%EXPORT_TAGS>.
+This method is called B<on each class in the package hierarchy> which doesn't define the tag,
+since the tag is an aggregate of all the members throughout the hierarchy, so you might want to
+only return an arrayref if C<$self> is the package where you wrote your method.  Be sure to call
+C<next::method> to handle generic tags that come from parent classes, like C<':all'>.
 
 =head1 SEE ALSO
 
