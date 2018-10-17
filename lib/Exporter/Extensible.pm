@@ -125,7 +125,7 @@ sub import {
 					$self2->$method($symbol, $self2->{generator_arg});
 				};
 				# Verify generator output matches sigil
-				ref $ref eq $sigil_to_reftype{$sigil}
+				ref $ref eq $sigil_to_reftype{$sigil} or (ref $ref eq 'REF' && $sigil eq '$')
 					or _croak("Trying to export '$symbol', but generator returned "
 						.ref($ref).' (need '.$sigil_to_reftype{$sigil}.')');
 			}
@@ -633,7 +633,7 @@ sub exporter_export {
 				$ref= \$coderef; # REF to coderef
 			}
 			else {
-				ref $ref eq $sigil_to_reftype{$sigil}
+				ref $ref eq $sigil_to_reftype{$sigil} or (ref $ref eq 'REF' && $sigil eq '$')
 					or _croak("'$export' should be $sigil_to_reftype{$sigil} but you supplied ".ref($ref));
 			}
 			no strict 'refs';
