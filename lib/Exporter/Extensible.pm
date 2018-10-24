@@ -793,20 +793,31 @@ If you want a pure class hierarchy but also export a few symbols, consider somet
 
 =head1 IMPORT API (for consumer)
 
+=head2 import
+
+When you call C<< use MyPackage @list >> it is equivalent to
+
+  BEGIN {
+    require MyPackage;
+    MyPackage->import(@list)
+  }
+
 The user-facing API is mostly the same as Sub::Exporter or Exporter::Tiny, except that C<-foo>
 is not a group and there are no "collections" (though you could implement collections using
 options).
 
-=head2 C<name>, C<$name>, C<@name>, C<%name>, C<*name>, C<:name>
+The elements of C<@list> are handles as:
+
+=head3 C<name>, C<$name>, C<@name>, C<%name>, C<*name>, C<:name>
 
 Same as L<Exporter>, except it might be generated on the fly, and may be followed by an
 options hashref.
 
-=head2 C<-name>
+=head3 C<-name>
 
 Run custom processing defined by module author, possibly consuming arguments that follow it.
 
-=head2 Global Options
+=head3 C<< {...} >> (Global Options)
 
 If the first argument to C<import> is a hashref, these fields are recognized:
 
@@ -892,7 +903,7 @@ Append this string to all imported names.
 
 =back
 
-=head2 In-line Options
+=head3 C<< NAME => { ... } >> (In-line Options)
 
 The arguments to C<import> are generally scalars.  If one is followed by a hashref, the hashref
 becomes the argument to the generator (if any), but may also contain:
@@ -920,6 +931,14 @@ Same as global option C<not>, limited to this one tag.
 Same as global option C<replace>, limited to this one tag.
 
 =back
+
+=head2 import_into
+
+When you call C<use MyModule @list> you are calling C<< require MyModule; MyModule->import(@list) >>.
+It automatically picks up the calling package, and imports there.
+As a shortcut for the C<into> option, you may say C<< MyModule->import_into("SomePackage", @list) >>.
+
+There is also a more generic way to handle this need though - see L<Import::Into>
 
 =head1 EXPORT API (for author)
 
