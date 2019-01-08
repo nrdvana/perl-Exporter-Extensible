@@ -480,7 +480,7 @@ sub exporter_autoload_tag {
 
 sub exporter_also_import {
 	my $self= shift;
-	ref $self && $self->{todo} or _croak('exporter_also_import can onnly be called on $self during an import()');
+	ref $self && $self->{todo} or _croak('exporter_also_import can only be called on $self during an import()');
 	push @{$self->{todo}}, @_;
 }
 
@@ -795,29 +795,30 @@ If you want a pure class hierarchy but also export a few symbols, consider somet
 
 =head2 import
 
-When you call C<< use MyPackage @list >> it is equivalent to
-
-  BEGIN {
-    require MyPackage;
-    MyPackage->import(@list)
-  }
+This is the method that gets called when you C<use DerivedModule @list>.
 
 The user-facing API is mostly the same as Sub::Exporter or Exporter::Tiny, except that C<-foo>
 is not a group and there are no "collections" (though you could implement collections using
 options).
 
-The elements of C<@list> are handles as:
+The elements of C<@list> are handled according to the following patterns:
 
-=head3 C<name>, C<$name>, C<@name>, C<%name>, C<*name>, C<:name>
+=head3 Plain Name With Sigil
 
-Same as L<Exporter>, except it might be generated on the fly, and may be followed by an
-options hashref.
+  use DerivedModule 'name', '$name', '@name', '%name', '*name', ':name';
 
-=head3 C<-name>
+Same as L<Exporter>, except it might be generated on the fly, and can be followed by an
+options hashref for further control over how it gets imported.  (see L</In-line Options>)
+
+=head3 Option
+
+  use DerivedModule -name, ...;
 
 Run custom processing defined by module author, possibly consuming arguments that follow it.
 
-=head3 C<< {...} >> (Global Options)
+=head3 Global Options
+
+  use DerivedModule { ... }, ...;
 
 If the first argument to C<import> is a hashref, these fields are recognized:
 
@@ -903,10 +904,12 @@ Append this string to all imported names.
 
 =back
 
-=head3 C<< NAME => { ... } >> (In-line Options)
+=head3 In-line Options
 
-The arguments to C<import> are generally scalars.  If one is followed by a hashref, the hashref
-becomes the argument to the generator (if any), but may also contain:
+  use DerivedModule ':name' => { ... };
+
+The arguments to C<import> are generally plain strings.  If one is followed by a hashref,
+the hashref becomes the argument to the generator (if any), but may also contain:
 
 =over
 
@@ -916,11 +919,11 @@ Install the thing as this exact name. (no sigil, but relative to C<into>)
 
 =item -prefix
 
-Same as global option C<prefix>, limited to this one tag.
+Same as global option C<prefix>, limited to this one symbol/tag.
 
 =item -suffix
 
-Same as global option C<suffix>, limited to this one tag.
+Same as global option C<suffix>, limited to this one symbol/tag.
 
 =item -not
 
@@ -934,11 +937,13 @@ Same as global option C<replace>, limited to this one tag.
 
 =head2 import_into
 
-When you call C<use MyModule @list> you are calling C<< require MyModule; MyModule->import(@list) >>.
-It automatically picks up the calling package, and imports there.
-As a shortcut for the C<into> option, you may say C<< MyModule->import_into("SomePackage", @list) >>.
+  DerivedModule->import_into('DestinationPackage', @list);
 
-There is also a more generic way to handle this need though - see L<Import::Into>
+This is a shorthand for
+
+  DerivedModule->import({ into => 'DestinationPackage }, @list);
+
+There is also a more generic way to handle this underlying need though - see L<Import::Into>
 
 =head1 EXPORT API (for author)
 
@@ -969,7 +974,15 @@ convenience function L</export>.
 
 =head3 export
 
-This function takes a list of keys (which must be scalars), with optional values which must be
+C<< export(@list) >> is a convenient alias for C<< __PACKAGE__->exporter_export(@list); >>
+which you receive from C<-exporter_setup>.
+
+=head3 exporter_export
+
+  __PACKAGE__->exporter_export(@things);
+  __PACKAGE__->exporter_export(qw( $foo bar ), ':baz' => \@tag_members, ... );
+
+This class method takes a list of keys (which must be scalars), with optional values which must be
 refs.  If the value is omitted, C<export> attempts to do-what-you-mean to find it.
 
 =over
@@ -1204,7 +1217,7 @@ symbols as if they had been passed to L</import>, you could call L</exporter_als
 =head2 exporter_also_import
 
 This method can be used *during* a call to C<import> for an option or generator to request that
-aditional things be imported into the caller as if the caller ad requested them on the import
+aditional things be imported into the caller as if the caller had requested them on the import
 line.  For example:
 
   sub foo : Export(-) {
