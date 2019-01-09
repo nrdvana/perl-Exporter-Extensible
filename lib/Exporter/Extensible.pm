@@ -772,15 +772,12 @@ convention that names beginning with dash C<-> are treated as requests for runti
 Additionally, it may consume the arguments that follow it, at the discresion of the module
 author.  This feature is designed to feel like command-line option processing.
 
-=item (Small) Namespace and inheritance pollution
+=item Inheritance and Namespace pollution
 
-This module defines an API used for the declaration and implementation of the export process.
-If you wanted to export any symbol starting with the prefix C<exporter_> then you probably
-shouldn't build on top of this exporter.
-(I could have kept these meta-methods in a separate namespace, but that would defeat the goal
-of "easy to extend".)
-
-If you want a pure class hierarchy but also export a few symbols, consider something like this:
+This module uses the package hierarchy for combining exportable sets of things.
+It also calls C<< __PACKAGE__->new >> every time a user imports something.
+If you want to make an object-oriented class but also export a few symbols, consider something
+like this:
 
     package My::Class;
     package My::Class::Exports {
@@ -788,6 +785,20 @@ If you want a pure class hierarchy but also export a few symbols, consider somet
       ...
     }
     sub import { My::Class::Exports->import_into(scalar caller, @_) }
+
+This module also defines an API used for the declaration and implementation of the export
+process (though every methods starts with C<exporter_> so it shouldn't affect you).
+If you wanted to export any symbol starting with the prefix C<exporter_> then you probably
+shouldn't build on top of this exporter.
+(I could have kept these meta-methods in a separate namespace, but that would defeat the goal
+of "easy to extend".)
+
+=item Requires Perl 5.12
+
+It is possible to support earlier perls, but hard to support the method attributes, and would
+make a mess of the code.  I see this module more for authoring fancy modern modules than for
+use as a cpan-wide standard.  If supporting old perls is important to you, I recommend just
+sticking with the core Exporter module.
 
 =back
 
@@ -1243,17 +1254,17 @@ generator can retrieve the values from there.
   package MyExports;
   use Exporter::Extensible -exporter_setup => 1;
   export(
-    # be sure to use names that won't conflict with Exporter::Extensible's internals
+    # be sure to use hash keys that won't conflict with Exporter::Extensible's internals
     '-foo(1)' => sub { $_[0]{foo}= $_[1] },
     '-bar(1)' => sub { $_[0]{bar}= $_[1] },
     '=foobar' => sub { my $foobar= $_[0]{foo} . $_[0]{bar}; sub { $foobar } },
   );
   
   package User;
-  use MyModule -foo => 'abc', -bar -> 'def', 'foobar', -foo => 'xyz', 'foobar', { -as => "x" };
+  use MyModule qw/ -foo abc -bar def foobar -foo xyz foobar /, { -as => "x" };
   # This exports a sub as "foobar" which returns "abcdef", and a sub as "x" which
-  # returns "xyzdef".  Note that if the second one didn't specify -as, it would get ignored
-  # because 'foobar' was already queued to be installed.
+  # returns "xyzdef".  Note that if the second one didn't specify {-as => "x"},
+  # it would get ignored because 'foobar' was already queued to be installed.
 
 =head1 AUTOLOADING SYMBOLS AND TAGS
 
@@ -1265,20 +1276,22 @@ symbols and tags on demand.  Simply override one of these methods:
   my $ref= $self->exporter_autoload_symbol($sym);
 
 This takes a symbol (including sigil), and returns a ref which should be installed.  The ref
-is cached, but B<not> added to the package C<%EXPORT>.  If you want that to happen, you need to
-do it yourself.  This method is called once at the end of iterating the package hierarchy, so
-you should call C<next::method> if you don't recognize the symbol.
+is cached, but B<not> added to the package C<%EXPORT> to be inherited by subclasses.  If you
+want that to happen, you need to do it yourself.  This method is called once at the end of
+checking the package hierarchy, rather than per-class of the hierarchy, so you should call
+C<next::method> if you don't recognize the symbol.
 
 =head2 exporter_autoload_tag
 
   my $arrayref= $self->exporter_autoload_tag($name);
 
 This takes a tag name (no sigil) and returns an arrayref of items which should be added to the
-tag.  The combined tag members are cached, but not added to the package C<%EXPORT_TAGS>.
-This method is called only if no package in the hierarchy defined the tag, which could cause
-confusion if a derived class wants to add a few symbols to a tag which is otherwise autoloaded
-by a parent.  This method is called once at the end of iterating the package hierarchy, so
-you should call C<next::method> to collect any inherited autoloaded members of this tag.
+tag.  The combined tag members are cached, but not added to the package C<%EXPORT_TAGS> to be
+inherited by subclasses.  This method is called only if no package in the hierarchy defined the
+tag, which could cause confusion if a derived class wants to add a few symbols to a tag which
+is otherwise autoloaded by a parent.  This method is called once at the end of iterating the
+package hierarchy, so you should call C<next::method> to collect any inherited autoloaded
+members of this tag.
 
 =head1 SEE ALSO
 
