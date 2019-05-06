@@ -1,11 +1,13 @@
 package Exporter::Extensible;
-
 use v5.12;
 use strict;
 use warnings;
 use Scalar::Util;
 require MRO::Compat if $] lt '5.009005';
 require mro;
+
+# ABSTRACT: Create easy-to-extend modules which export symbols
+# VERSION
 
 our %EXPORT_PKG_CACHE;
 our %EXPORT_TAGS_PKG_CACHE;
@@ -678,8 +680,6 @@ sub exporter_export {
 1;
 
 __END__
-
-# ABSTRACT: Create easy-to-extend modules which export symbols
 
 =head1 SYNOPSIS
 
