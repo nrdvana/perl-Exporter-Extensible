@@ -3,6 +3,7 @@ package Exporter::Extensible;
 use v5.12;
 use strict;
 use warnings;
+use Scalar::Util;
 require MRO::Compat if $] lt '5.009005';
 require mro;
 
@@ -177,8 +178,9 @@ sub import {
 		# Then pass that list to the installer (or uninstaller)
 		$self->$method(\@flat_install);
 		# If scope requested, create the scope-guard object
-		if (my $scope= delete $self->{scope}) {
+		if (my $scope= $self->{scope}) {
 			$$scope= bless [ $self, \@flat_install ], 'Exporter::Extensible::UnimportScopeGuard';
+			Scalar::Util::weaken($self->{scope});
 		}
 		# It's entirely likely that a generator might curry $self inside the sub it generated.
 		# So, we end up with a circular reference if we're holding onto the set of all things we
