@@ -187,9 +187,15 @@ sub import {
 	}
 	1;
 }
+
+sub Exporter::Extensible::UnimportScopeGuard::clean {
+	my $self= shift;
+	$self->[0]->exporter_uninstall($self->[1]) if $self->[1];
+	$self->[1]= undef; # Ignore subsequent calls
+}
+
 sub Exporter::Extensible::UnimportScopeGuard::DESTROY {
-	my ($exporter, $list)= @{+shift};
-	$exporter->exporter_uninstall($list);
+	shift->clean;
 }
 
 sub exporter_install {
@@ -808,7 +814,7 @@ sticking with the core Exporter module.
 
 This is the method that gets called when you C<use DerivedModule @list>.
 
-The user-facing API is mostly the same as Sub::Exporter or Exporter::Tiny, except that C<-foo>
+The user-facing API is mostly the same as L<Sub::Exporter> or L<Exporter::Tiny>, except that C<-foo>
 is not a group and there are no "collections" (though you could implement collections using
 options).
 
@@ -842,14 +848,17 @@ Package name or hashref to which all symbols will be exported.  Defaults to C<ca
 =item scope
 
 Empty scalar-ref whose scope determines when to unimport the things just imported.
-After a successful import, this wil be assigned a scope-guard object whose destructor
+After a successful import, this will be assigned a scope-guard object whose destructor
 un-imports those same symbols.  This saves you the hassle of calling "no MyModule @args".
+You can also call C<< $scope->clean >> to trigger the unimport in a more direct manner.
+If you need the methods cleaned out at the end of compilation (i.e. before execution)
+you can wrap C<clean> in a C<BEGIN> block.
 
   {
     use MyModule { scope => \my $scope }, ':sugar_methods';
 	# use sugar methods
 	...
-	# you could "undef $scope" if you want them removed sooner
+	# you could "BEGIN { $scope->clean }" if you want them removed sooner
   }
   # All those symbols are now neatly removed from your package
 
@@ -1100,7 +1109,7 @@ name of the sub is used.  N may be C<'*'> or C<'?'>; see L</IMPLEMENTING OPTIONS
 =item C<< = >>, C<< =$ >>, C<< =@ >>, C<< =% >>, C<< =* >>, C<< =foo >>, C<< =$foo >>, ...
 
 This sets up the sub as a generator for the export-name.  If the word portion of the name is
-omitted, it is taken to be the sub name minus the prefix "_generate_" or "_generate$REFTYPE_".
+omitted, it is taken to be the sub name minus the prefix C<_generate_> or C<_generate$REFTYPE_>.
 See L</IMPLEMENTING GENERATORS>.
 
 =back
@@ -1188,7 +1197,7 @@ scalar name of a generator, or a coderef of the generator.
 =head1 IMPLEMENTING OPTIONS
 
 Exporter::Extensible lets you run whatever code you like when it encounters "-name" in the
-import list.  To accomodate all the different ways I wanted to use this, I decided to let the
+import list.  To accommodate all the different ways I wanted to use this, I decided to let the
 option decide how many arguments to consume.  So, the API is as follows:
 
   # By default, no arguments are captured.  A ref may not follow this option.
@@ -1248,7 +1257,7 @@ as specified to C<import> (with sigil) and C<$args> is the optional hashref the 
 given following C<$symbol>.
 
 If you wanted to implement something like L<Sub::Exporter>'s "Collectors", you can just write
-some options that take an argument and store it in the $exporter instance.  Then, your
+some options that take an argument and store it in the C<$exporter> instance.  Then, your
 generator can retrieve the values from there.
 
   package MyExports;
