@@ -33,13 +33,13 @@ our %reftype_to_sigil= (
 	'CODE'   => '',
 );
 our %sigil_to_generator_prefix= (
-	'$' => '_generateScalar_',
-	'@' => '_generateArray_',
-	'%' => '_generateHash_',
-	'*' => '_generateGlob_',
-	'&' => '_generate_',
-	''  => '_generate_',
+	'$' => [ '_generateSCALAR_', '_generateScalar_' ],
+	'@' => [ '_generateARRAY_', '_generateArray_' ],
+	'%' => [ '_generateHASH_', '_generateHash_' ],
+	'*' => [ '_generateGLOB_', '_generateGlob_' ],
+	'&' => [ '_generate_', '_generateCODE_', '_generateCode' ],
 );
+$sigil_to_generator_prefix{''}= $sigil_to_generator_prefix{'&'};
 
 sub _croak { require Carp; goto &Carp::croak; }
 sub _carp { require Carp; goto &Carp::carp; }
@@ -542,44 +542,42 @@ sub _exporter_get_ref_to_package_var {
 sub _exporter_process_attribute {
 	my ($class, $coderef, $attr)= @_;
 	if ($attr =~ /^Export(?:\(\s*(.*?)\s*\))?$/) {
-		my (%tags, $subname, $export_name);
+		my (%tags, $subname, @export_names);
 		# If given a list in parenthesees, split on space and proces each.  Else use the name of the sub itself.
 		for my $token ($1? split(/\s+/, $1) : ()) {
 			if ($token =~ /^:(.*)$/) {
-				$tags{$1}++; # save tags until we have the export_name
+				$tags{$1}++; # save tags until we have the export_names
 			}
 			elsif ($token =~ /^\w+$/) {
-				$export_name ||= $token;
+				push @export_names, $token;
 				no strict 'refs';
 				${$class.'::EXPORT'}{$token}= $coderef;
 			}
 			elsif ($token =~ /^-(\w*)(?:\(([0-9]+|\*)\))?$/) {
 				$subname ||= _exporter_get_coderef_name($coderef);
-				$export_name ||= length $1? $token : "-$subname";
-				$class->exporter_register_option(substr($export_name,1), $subname, $2);
+				push @export_names, length $1? $token : "-$subname";
+				$class->exporter_register_option(substr($export_names[-1],1), $subname, $2);
 			}
-			elsif ($token =~ /^=(([\$\@\%\*:]?)(\w*))$/) {
+			elsif (my($sym, $name)= ($token =~ /^=([\&\$\@\%\*:]?(\w*))$/)) {
 				$subname ||= _exporter_get_coderef_name($coderef);
-				my $symbol= $1;
-				unless (length $3) {
-					my $prefix= $sigil_to_generator_prefix{$1};
-					$symbol .= substr($subname,0,length($prefix)) eq $prefix
-						? substr($subname,length($prefix))
-						: $subname;
-				}
-				$export_name ||= $symbol;
+				my $export_name= length $name? $sym : do {
+					(my $x= $subname) =~ s/^_generate[A-Za-z]*_//;
+					$sym . $x
+				};
+				$export_name =~ s/^[&]//;
 				$class->exporter_register_generator($export_name, $subname);
+				push @export_names, $export_name;
 			}
 			else {
 				_croak("Invalid export notation '$token'");
 			}
 		}
-		if (!defined $export_name) { # if list was empty or only tags...
-			$export_name= _exporter_get_coderef_name($coderef);
+		if (!@export_names) { # if list was empty or only tags...
+			push @export_names, _exporter_get_coderef_name($coderef);
 			no strict 'refs';
-			${$class.'::EXPORT'}{$export_name}= $coderef;
+			${$class.'::EXPORT'}{$export_names[-1]}= $coderef;
 		}
-		$class->exporter_register_tag_members($_, $export_name) for keys %tags;
+		$class->exporter_register_tag_members($_, @export_names) for keys %tags;
 		return 1;
 	}
 	return;
@@ -631,10 +629,13 @@ sub exporter_export {
 			$ref ||= $class->_exporter_get_ref_to_package_var($sigil, $name)
 				unless $is_gen;
 			if (!$ref) {
-				my $gen= $sigil_to_generator_prefix{$sigil}.$name;
-				$class->can($gen)
-					or _croak("Export '$export' not found in package $class, nor a generator $gen");
-				$ref= \\$gen;  # REF REF to method name
+				for (@{ $sigil_to_generator_prefix{$sigil} }) {
+					my $gen= $_ . $name;
+					next unless $class->can($gen);
+					$ref= \\$gen;  # REF REF to method name
+					last;
+				}
+				$ref or _croak("Export '$export' not found in package $class, nor a generator $sigil_to_generator_prefix{$sigil}[0]");
 			}
 			elsif ($is_gen) {
 				ref $ref eq 'CODE' or _croak("Export '$export' should be followed by a generator coderef");
@@ -1038,7 +1039,7 @@ the tag is encountered.
 Prefixing an export name with an equal sign means you want to generate the export on the fly.
 The ref is understood to be the coderef or method name to call (as a method) which will return
 the ref of the correct type to be exported.  The default is to look for C<_generate_foo>,
-C<_generateScalar_foo>, C<_generateArray_foo>, C<_generateHash_foo>, etc.
+C<_generateSCALAR_foo>, C<_generateARRAY_foo>, C<_generateHASH_foo>, etc.
 
 =back
 
