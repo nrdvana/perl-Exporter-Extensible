@@ -752,21 +752,9 @@ passing options to generators, importing to things other than C<caller>, etc.
 Pick your favorite.  You can use the L<export> do-what-I-mean function, method attributes, the
 C<< __PACKAGE__->exporter_ ... >> API, or declare package variables similar to L<Exporter>.
 
-=item No Non-core Dependencies (for newer Perl)
+=item No Non-core Dependencies (for Perl E<8805> 5.12)
 
 Because nobody likes big dependency trees.
-
-=over 12
-
-=item Perl 5.10
-
-requires L<B::Hooks::EndOfScope>
-
-=item Perl 5.8
-
-requires L<MRO::Compat>
-
-=back
 
 =item Speed
 
