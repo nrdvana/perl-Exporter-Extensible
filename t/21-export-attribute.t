@@ -21,6 +21,16 @@ my @tests= (
 		{ beta => '\&Example::alpha' },
 		{ 'group1' => ['beta'], 'group2' => ['beta'] },
 	],
+	[ 'export multiple sub aliases in multiple groups',
+		'sub alpha :Export( :group1 alpha beta :group1 ) {}',
+		{ alpha => '\&Example::alpha', beta => '\&Example::alpha' },
+		{ group1 => ['alpha','beta'], group2 => ['alpha','beta'] }
+	],
+	[ 'multiple exports of same sub',
+		'sub alpha :Export( alpha :group1 ) Export(beta :group2) {}',
+		{ alpha => '\&Example::alpha', beta => '\&Example::alpha' },
+		{ group1 => ['alpha'], group2 => ['beta'] }
+	],
 	[ 'export a generator',
 		'sub _generate_alpha :Export(=) {}',
 		{ alpha => \\'_generate_alpha' },
