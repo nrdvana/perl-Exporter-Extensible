@@ -1,9 +1,9 @@
 package Exporter::Extensible;
-use v5.12;
+use v5;
 use strict;
 use warnings;
 use Scalar::Util;
-require MRO::Compat if $] lt '5.009005';
+require Exporter::Extensible::Compat if "$]" < "5.012";
 require mro;
 
 # ABSTRACT: Create easy-to-extend modules which export symbols
@@ -751,9 +751,21 @@ passing options to generators, importing to things other than C<caller>, etc.
 Pick your favorite.  You can use the L<export> do-what-I-mean function, method attributes, the
 C<< __PACKAGE__->exporter_ ... >> API, or declare package variables similar to L<Exporter>.
 
-=item No Non-core Dependencies
+=item No Non-core Dependencies (for newer Perl)
 
 Because nobody likes big dependency trees.
+
+=over 12
+
+=item Perl 5.10
+
+requires L<B::Hooks::EndOfScope>
+
+=item Perl 5.8
+
+requires L<MRO::Compat>
+
+=back
 
 =item Speed
 
@@ -766,7 +778,7 @@ fast".  The features are written so you only pay for what you use.
 
 =over
 
-=item Imposes meaning on hashrefs
+=item Imposes meaning on hashrefs in import list
 
 If the first argument to C<import> is a hashref, it is used as configuration of C<import>.
 Hashref arguments following a symbol name are treated as arguments to the generator (if any)
@@ -783,9 +795,11 @@ author.  This feature is designed to feel like command-line option processing.
 =item Inheritance and Namespace pollution
 
 This module uses the package hierarchy for combining exportable sets of things.
+It also defines lots of methods starting with the prefix C<exporter_>.
 It also calls C<< __PACKAGE__->new >> every time a user imports something.
-If you want to make an object-oriented class but also export a few symbols, consider something
-like this:
+If you want to make an object-oriented class but also export a few symbols, you need to use
+a second namespace like C<My::Class::Exports> instead of C<My::Class> and then delegate to
+its L</import_into> method.
 
     package My::Class;
     package My::Class::Exports {
@@ -793,20 +807,6 @@ like this:
       ...
     }
     sub import { My::Class::Exports->import_into(scalar caller, @_) }
-
-This module also defines an API used for the declaration and implementation of the export
-process (though every methods starts with C<exporter_> so it shouldn't affect you).
-If you wanted to export any symbol starting with the prefix C<exporter_> then you probably
-shouldn't build on top of this exporter.
-(I could have kept these meta-methods in a separate namespace, but that would defeat the goal
-of "easy to extend".)
-
-=item Requires Perl 5.12
-
-It is possible to support earlier perls, but hard to support the method attributes, and would
-make a mess of the code.  I see this module more for authoring fancy modern modules than for
-use as a cpan-wide standard.  If supporting old perls is important to you, I recommend just
-sticking with the core Exporter module.
 
 =back
 
