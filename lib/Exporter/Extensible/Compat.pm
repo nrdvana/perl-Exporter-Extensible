@@ -1,3 +1,4 @@
+package Exporter::Extensible::Compat;
 use strict;
 use warnings;
 require MRO::Compat if "$]" < '5.009005';
@@ -11,10 +12,10 @@ require MRO::Compat if "$]" < '5.009005';
 # before any public API method, and at the end of the scope.
 
 my $process_attr= \&Exporter::Extensible::_exporter_process_attribute;
-@Exporter::Extensible::Compat::_pending_attr= ();
+our @_pending_attr= ();
 {
 	no warnings 'redefine';
-	*Exporter::Extensible::_exporter_process_attribute= *Exporter::Extensible::Compat::_exporter_process_attribute;
+	*Exporter::Extensible::_exporter_process_attribute= *_exporter_process_attribute;
 	# Other methods that might be called before end of scope
 	for (qw(
 		FETCH_CODE_ATTRIBUTES MODIFY_CODE_ATTRIBUTES import exporter_setup
@@ -25,8 +26,8 @@ my $process_attr= \&Exporter::Extensible::_exporter_process_attribute;
 	)) {
 		my $method= Exporter::Extensible->can($_);
 		eval 'sub Exporter::Extensible::'.$_.' {
-				Exporter::Extensible::Compat::_process_pending_attrs()
-					if @Exporter::Extensible::Compat::_pending_attr;
+				_process_pending_attrs()
+					if @_pending_attr;
 				goto $method;
 			}
 			1'
@@ -34,28 +35,28 @@ my $process_attr= \&Exporter::Extensible::_exporter_process_attribute;
 	};
 }
 
-sub Exporter::Extensible::Compat::_queue_attr {
+sub _queue_attr {
 	my ($class, $coderef, $attr)= @_;
-	if (!@Exporter::Extensible::Compat::_pending_attr) {
+	if (!@_pending_attr) {
 		require B::Hooks::EndOfScope;
-		B::Hooks::EndOfScope::on_scope_end(\&Exporter::Extensible::Compat::_process_pending_attrs);
+		B::Hooks::EndOfScope::on_scope_end(\&_process_pending_attrs);
 	}
-	push @Exporter::Extensible::Compat::_pending_attr, [ @_ ];
+	push @_pending_attr, [ @_ ];
 }
 
-sub Exporter::Extensible::Compat::_process_pending_attrs {
-	while (my $call= shift @Exporter::Extensible::Compat::_pending_attr) {
+sub _process_pending_attrs {
+	while (my $call= shift @_pending_attr) {
 		$process_attr->(@$call);
 	}
 }
 
-sub Exporter::Extensible::Compat::_exporter_process_attribute {
+sub _exporter_process_attribute {
 	my $ret;
 	if (eval { $ret= $process_attr->(@_); 1 }) {
 		return $ret;
 	}
 	elsif ($@ =~ /determine export name/) {
-		Exporter::Extensible::Compat::_queue_attr(@_);
+		_queue_attr(@_);
 		return 1;
 	}
 	else {
