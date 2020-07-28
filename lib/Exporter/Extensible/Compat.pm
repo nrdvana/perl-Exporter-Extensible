@@ -3,13 +3,22 @@ use strict;
 use warnings;
 require MRO::Compat if "$]" < '5.009005';
 
-# The main problem solved here is that perl earlier than 5.12 does not install
-# a sub into the package stash until after calling MODIFY_CODE_ATTRIBUTES, so
-# the :Export attributes can't resolve to a name until later.
+=head1 DESCRIPTION
 
-# There isn't any good spot in the API of Exporter::Extensible to put this
-# delayed processing, so about the only way to fix is to just perform it
-# before any public API method, and at the end of the scope.
+This module provides a compatibility layer for perl 5.10 and 5.8.
+The module itself is not used at all; loading it applies monkey patches
+to Exporter::Extensible.  Do not use this module, as it gets loaded
+automatically by Exporter::Extensible if needed.
+
+The main problem solved here is that perl earlier than 5.12 does not install
+a sub into the package stash until after calling MODIFY_CODE_ATTRIBUTES, so
+the :Export attributes can't resolve to a name until later.
+
+There isn't any good spot in the API of Exporter::Extensible to put this
+delayed processing, so about the only way to fix is to just perform it
+before any public API method, and at the end of the scope.
+
+=cut
 
 my $process_attr= \&Exporter::Extensible::_exporter_process_attribute;
 our @_pending_attr= ();
