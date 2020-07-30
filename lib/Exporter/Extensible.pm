@@ -53,34 +53,69 @@ sub import {
 	# Optional config hash might be given as first argument
 	$self= $self->exporter_apply_global_config(shift)
 		if ref $_[0] eq 'HASH';
-	$self->{todo}= \@_;
 	
-	# Quick access to these fields
-	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
+	my $def;
+	my @todo= @_? @_
+		: ($def= $self->exporter_get_tag('default'))? @$def
+		: return 1;
+	my $install= $self->_exporter_build_install_set(\@todo);
+
+	# Install might actually be uninstall.  It also might be overridden by the user.
+	# The exporter_combine_config sets this up so we don't need to think about details.
+	my $method= $self->{installer} || ($self->{no}? 'exporter_uninstall' : 'exporter_install');
+	# Convert
+	#    { foo => { SCALAR => \$foo, HASH => \%foo } }
+	# into
+	#    [ foo => \$foo, foo => \%foo ]
+	my @flat_install= %$install;
+	for my $i (reverse 1..$#flat_install) {
+		if (ref $flat_install[$i] eq 'HASH') {
+			splice @flat_install, $i-1, 2, map +($flat_install[$i-1] => $_), values %{$flat_install[$i]};
+		}
+	}
+	# Then pass that list to the installer (or uninstaller)
+	$self->$method(\@flat_install);
+	# If scope requested, create the scope-guard object
+	if (my $scope= $self->{scope}) {
+		$$scope= bless [ $self, \@flat_install ], 'Exporter::Extensible::UnimportScopeGuard';
+		$weaken->($self->{scope});
+	}
+	# It's entirely likely that a generator might curry $self inside the sub it generated.
+	# So, we end up with a circular reference if we're holding onto the set of all things we
+	# exported.  Clear the set.
+	%$install= ();
+	1;
+}
+
+sub _exporter_build_install_set {
+	my ($self, $todo)= @_;
+	$self->{todo}= $todo;
 	my $install= $self->{install_set} ||= {};
+	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
 	my $not= $self->{not};
-	
-	unshift @_, @{ $self->exporter_get_tag('default') || [] }
-		unless @_;
-	for (my $i= 0; $i < @_;) {
-		my $symbol= $_[$i++];
+	while (@$todo) {
+		my $symbol= shift @$todo;
 		my ($sigil, $name)= ($symbol =~ /^([-:\$\@\%\*]?)(.*)/); # should always match
 		
 		# If it is a tag, then recursively call import on that list
 		if ($sigil eq ':') {
-			# If followed by a hashref, add those options to the current ones.
-			if (ref $_[$i] eq 'HASH') {
-				$croak->("can't apply -as to a tag") if exists $_[$i]{-as}; # this needed to ensure next line creates a clone
-				my $self2= $self->exporter_apply_inline_config($_[$i++]);
-				my $tag_cache= $self2->exporter_get_tag($name)
-					or $croak->("Tag ':$name' is not exported by ".ref($self));
-				$self2->import(@$tag_cache);
+			my $tag_cache= $self->exporter_get_tag($name)
+				or $croak->("Tag ':$name' is not exported by ".ref($self));
+			# If first element of tag is a hashref, they count as nested global options.
+			# If tag was followed by hashref, those are user-supplied options.
+			if (ref $tag_cache->[0] eq 'HASH' || ref $todo->[0] eq 'HASH') {
+				$tag_cache= [ @$tag_cache ]; # don't destroy cache
+				my $self2= $self;
+				$self2= $self2->exporter_apply_global_config(shift @$tag_cache)
+					if ref $tag_cache->[0] eq 'HASH';
+				$self2= $self2->exporter_apply_inline_config(shift @$todo)
+					if ref $todo->[0] eq 'HASH';
+				if ($self != $self2) {
+					$self2->_exporter_build_install_set($tag_cache);
+					next;
+				}
 			}
-			else {
-				my $tag_cache= $self->exporter_get_tag($name)
-					or $croak->("Tag ':$name' is not exported by ".ref($self));
-				splice(@_, $i, 0, @$tag_cache);
-			}
+			unshift @$todo, @$tag_cache;
 			next;
 		}
 		# Else, it is an option or plain symbol to be exported
@@ -92,13 +127,13 @@ sub import {
 		if ($sigil eq '-') {
 			my ($method, $count)= @$ref;
 			if ($count eq '*') {
-				my $consumed= $self->$method(@_[$i..$#_]);
+				my $consumed= $self->$method(@$todo);
 				$consumed =~ /^[0-9]+$/ or $croak->("Method $method in ".ref($self)." must return a number of arguments consumed");
-				$i += $consumed;
+				splice(@$todo, 0, $consumed);
 			}
 			elsif ($count eq '?') {
-				if (ref $_[$i]) {
-					my $arg= $_[$i++];
+				if (ref $todo->[0]) {
+					my $arg= shift @$todo;
 					(ref $arg eq 'HASH'? $self->exporter_apply_inline_config($arg) : $self)
 						->$method($arg);
 				} else {
@@ -106,15 +141,14 @@ sub import {
 				}
 			}
 			else {
-				$self->$method(@_[$i..($i+$count-1)]);
-				$i += $count;
+				$self->$method(splice(@$todo, 0, $count));
 			}
 		}
 		else {
 			my $self2= $self;
 			# If followed by a hashref, add those options to the current ones.
-			$self2= $self->exporter_apply_inline_config($_[$i++])
-				if ref $_[$i] eq 'HASH';
+			$self2= $self->exporter_apply_inline_config(shift @$todo)
+				if ref $todo->[0] eq 'HASH';
 			next if defined $not and $self->_exporter_is_excluded($symbol);
 			no warnings 'uninitialized';
 			my $dest= delete $self2->{as} || $self2->{prefix} . $name . $self2->{suffix};
@@ -162,35 +196,7 @@ sub import {
 			}
 		}
 	}
-	# This is called recursively.  If we are back to the top level (!defined ->{parent}) then call
-	# install method to copy the refs into the target package.
-	unless ($self->{parent}) {
-		# Install might actually be uninstall.  It also might be overridden by the user.
-		# The exporter_combine_config sets this up so we don't need to think about details.
-		my $method= $self->{installer} || ($self->{no}? 'exporter_uninstall' : 'exporter_install');
-		# Convert
-		#    { foo => { SCALAR => \$foo, HASH => \%foo } }
-		# into
-		#    [ foo => \$foo, foo => \%foo ]
-		my @flat_install= %$install;
-		for my $i (reverse 1..$#flat_install) {
-			if (ref $flat_install[$i] eq 'HASH') {
-				splice @flat_install, $i-1, 2, map +($flat_install[$i-1] => $_), values %{$flat_install[$i]};
-			}
-		}
-		# Then pass that list to the installer (or uninstaller)
-		$self->$method(\@flat_install);
-		# If scope requested, create the scope-guard object
-		if (my $scope= $self->{scope}) {
-			$$scope= bless [ $self, \@flat_install ], 'Exporter::Extensible::UnimportScopeGuard';
-			$weaken->($self->{scope});
-		}
-		# It's entirely likely that a generator might curry $self inside the sub it generated.
-		# So, we end up with a circular reference if we're holding onto the set of all things we
-		# exported.  Clear the set.
-		%$install= ();
-	}
-	1;
+	return $install;
 }
 
 sub Exporter::Extensible::UnimportScopeGuard::clean {
