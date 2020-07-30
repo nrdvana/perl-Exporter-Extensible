@@ -2,7 +2,6 @@ package Exporter::Extensible;
 use v5;
 use strict;
 use warnings;
-use Scalar::Util;
 require Exporter::Extensible::Compat if "$]" < "5.012";
 require mro;
 
@@ -41,8 +40,10 @@ our %sigil_to_generator_prefix= (
 );
 $sigil_to_generator_prefix{''}= $sigil_to_generator_prefix{'&'};
 
-sub _croak { require Carp; goto &Carp::croak; }
-sub _carp { require Carp; goto &Carp::carp; }
+my ($carp, $croak, $weaken);
+$carp=   sub { require Carp; $carp= \&Carp::carp; goto $carp; };
+$croak=  sub { require Carp; $croak= \&Carp::croak; goto $croak; };
+$weaken= sub { require Scalar::Util; $weaken= \&Scalar::Util::weaken; goto $weaken; };
 
 sub import {
 	my $self= shift;
@@ -69,15 +70,15 @@ sub import {
 		if ($sigil eq ':') {
 			# If followed by a hashref, add those options to the current ones.
 			if (ref $_[$i] eq 'HASH') {
-				_croak("can't apply -as to a tag") if exists $_[$i]{-as}; # this needed to ensure next line creates a clone
+				$croak->("can't apply -as to a tag") if exists $_[$i]{-as}; # this needed to ensure next line creates a clone
 				my $self2= $self->exporter_apply_inline_config($_[$i++]);
 				my $tag_cache= $self2->exporter_get_tag($name)
-					or _croak("Tag ':$name' is not exported by ".ref($self));
+					or $croak->("Tag ':$name' is not exported by ".ref($self));
 				$self2->import(@$tag_cache);
 			}
 			else {
 				my $tag_cache= $self->exporter_get_tag($name)
-					or _croak("Tag ':$name' is not exported by ".ref($self));
+					or $croak->("Tag ':$name' is not exported by ".ref($self));
 				splice(@_, $i, 0, @$tag_cache);
 			}
 			next;
@@ -85,14 +86,14 @@ sub import {
 		# Else, it is an option or plain symbol to be exported
 		# Check current package cache first, else do the full lookup.
 		my $ref= (exists $inventory->{$symbol}? $inventory->{$symbol} : $self->exporter_get_inherited($symbol))
-			or _croak("'$symbol' is not exported by ".ref($self));
+			or $croak->("'$symbol' is not exported by ".ref($self));
 		
 		# If it starts with '-', it is an option, and might consume additional args
 		if ($sigil eq '-') {
 			my ($method, $count)= @$ref;
 			if ($count eq '*') {
 				my $consumed= $self->$method(@_[$i..$#_]);
-				$consumed =~ /^[0-9]+$/ or _croak("Method $method in ".ref($self)." must return a number of arguments consumed");
+				$consumed =~ /^[0-9]+$/ or $croak->("Method $method in ".ref($self)." must return a number of arguments consumed");
 				$i += $consumed;
 			}
 			elsif ($count eq '?') {
@@ -129,7 +130,7 @@ sub import {
 				};
 				# Verify generator output matches sigil
 				ref $ref eq $sigil_to_reftype{$sigil} or (ref $ref eq 'REF' && $sigil eq '$')
-					or _croak("Trying to export '$symbol', but generator returned "
+					or $croak->("Trying to export '$symbol', but generator returned "
 						.ref($ref).' (need '.$sigil_to_reftype{$sigil}.')');
 			}
 			# Check for collisions.  Unlikely scenario in typical usage, but could occur if two
@@ -142,14 +143,14 @@ sub import {
 						# globrefs will never be equal - compare the glob itself.
 						ref $ref eq 'GLOB' && ref $install->{dest} eq 'GLOB' && *{$install->{$dest}} eq *$ref
 							# can't install an entire glob at the same time as a piece of a glob.
-							or _croak("Can't install ".ref($ref)." and ".$install->{dest}." into the same symbol '".$dest."'");
+							or $croak->("Can't install ".ref($ref)." and ".$install->{dest}." into the same symbol '".$dest."'");
 					}
 					# Upgrade this item to a hashref of reftype if it wasn't already  (hashrefs are always stored this way)
 					$install->{$dest}= { ref($install->{$dest}) => $install->{$dest} }
 						unless ref $install->{$dest} eq 'HASH';
 					# Assign this new ref into a slot of that hash, unless something different was already there
 					($install->{$dest}{ref $ref} ||= $ref) == $ref
-						or _croak("Trying to import conflicting ".ref($ref)." values for '".$dest."'");
+						or $croak->("Trying to import conflicting ".ref($ref)." values for '".$dest."'");
 				}
 			}
 			# Only make install->{$dest} a hashref if we really have to, for performance.
@@ -182,7 +183,7 @@ sub import {
 		# If scope requested, create the scope-guard object
 		if (my $scope= $self->{scope}) {
 			$$scope= bless [ $self, \@flat_install ], 'Exporter::Extensible::UnimportScopeGuard';
-			Scalar::Util::weaken($self->{scope});
+			$weaken->($self->{scope});
 		}
 		# It's entirely likely that a generator might curry $self inside the sub it generated.
 		# So, we end up with a circular reference if we're holding onto the set of all things we
@@ -204,7 +205,7 @@ sub Exporter::Extensible::UnimportScopeGuard::DESTROY {
 
 sub exporter_install {
 	my $self= shift;
-	my $into= $self->{into} or _croak "'into' must be defined before exporter_install";
+	my $into= $self->{into} or $croak->("'into' must be defined before exporter_install");
 	return $self->_exporter_install_to_ref(@_) if ref $into;
 	my $replace= $self->{replace} || 'warn';
 	no strict 'refs';
@@ -224,8 +225,8 @@ sub exporter_install {
 			if ($conflict) {
 				next if $replace eq 'skip';
 				$name= $reftype_to_sigil{ref $ref} . $name; # include sigil for user's benefit
-				$replace eq 'warn'? _carp("Overwriting '$name' with $ref from ".ref($self))
-					: _croak("Refusing to overwrite '$name' with $ref from ".ref($self));
+				$replace eq 'warn'? $carp->("Overwriting '$name' with $ref from ".ref($self))
+					: $croak->("Refusing to overwrite '$name' with $ref from ".ref($self));
 			}
 		}
 		no warnings 'redefine';
@@ -235,7 +236,7 @@ sub exporter_install {
 
 sub exporter_uninstall {
 	my $self= shift;
-	my $into= $self->{into} or _croak "'into' must be defined before exporter_uninstall";
+	my $into= $self->{into} or $croak->("'into' must be defined before exporter_uninstall");
 	return $self->_exporter_install_to_ref(@_) if ref $into;
 	no strict 'refs';
 	my $stash= \%{$into.'::'};
@@ -265,7 +266,7 @@ sub exporter_uninstall {
 sub _exporter_install_to_ref {
 	my $self= shift;
 	my $into= $self->{into};
-	ref $into eq 'HASH' or _croak("'into' must be a hashref");
+	ref $into eq 'HASH' or $croak->("'into' must be a hashref");
 	my $replace= $self->{replace} || 'warn';
 	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
 	for (my $i= 0; $i < @$list; $i+= 2) {
@@ -277,8 +278,8 @@ sub _exporter_install_to_ref {
 		else {
 			if (defined $into->{$name} && $into->{name} != $ref) {
 				$replace eq 'skip' and next;
-				$replace eq 'warn' and _carp("Overwriting '$name' with $ref from ".ref($self));
-				$replace eq 'die' and _croak("Refusing to overwrite '$name' with $ref from ".ref($self));
+				$replace eq 'warn' and $carp->("Overwriting '$name' with $ref from ".ref($self));
+				$replace eq 'die' and $croak->("Refusing to overwrite '$name' with $ref from ".ref($self));
 			}
 			$into->{$name}= $ref;
 		}
@@ -304,7 +305,7 @@ our %replace_aliases= (
 	skip  => 'skip',
 );
 sub exporter_config_replace {
-	$_[0]{replace}= $replace_aliases{$_[1]} or _croak("Invalid 'replace' value: '$_[1]'")
+	$_[0]{replace}= $replace_aliases{$_[1]} or $croak->("Invalid 'replace' value: '$_[1]'")
 		if @_ > 1;
 	$_[0]{replace};
 }
@@ -314,7 +315,7 @@ sub exporter_apply_global_config {
 	for my $k (keys %$conf) {
 		my $setter= $self->can('exporter_config_'.$k)
 			or (substr($k,0,1) eq '-' && $self->can('exporter_config_'.substr($k,1)))
-			or _croak("No such exporter configuration '$k'");
+			or $croak->("No such exporter configuration '$k'");
 		$self->$setter($conf->{$k});
 	}
 	$self;
@@ -332,7 +333,7 @@ sub exporter_apply_inline_config {
 	my $self2= bless { %$self, parent => $self }, ref $self;
 	for my $k (@for_global_config) {
 		my $setter= $self2->can('exporter_config_'.substr($k,1))
-			or _croak("No such exporter configuration '$k'");
+			or $croak->("No such exporter configuration '$k'");
 		$self2->$setter($conf->{$k});
 	}
 	# If any options didn't start with '-', then the config becomes a parameter to the generator.
@@ -360,7 +361,7 @@ sub exporter_register_symbol {
 	my ($class, $export_name, $ref)= @_;
 	$class= ref($class)||$class;
 	$ref ||= $class->_exporter_get_ref_to_package_var($export_name)
-		or _croak("Symbol $export_name not found in package $class");
+		or $croak->("Symbol $export_name not found in package $class");
 	no strict 'refs';
 	${$class.'::EXPORT'}{$export_name}= $ref;
 }
@@ -399,7 +400,7 @@ sub exporter_register_generator {
 	no strict 'refs';
 	if ($export_name =~ /^:/) {
 		(${$class.'::EXPORT_TAGS'}{substr($export_name,1)} ||= $method_name) eq $method_name
-			or _croak("Cannot set generator for $export_name when that tag is already populated within this class ($class)");
+			or $croak->("Cannot set generator for $export_name when that tag is already populated within this class ($class)");
 	} else {
 		# If method name is a scalar, make it a scalar-ref-ref.  If it is a coderef, make it a coderef-ref
 		${$class.'::EXPORT'}{$export_name}= ref $method_name? \$method_name : \\$method_name;
@@ -433,9 +434,9 @@ sub _exporter_build_tag_cache {
 			# Found a generator (coderef or method name ref).  Call it to get the list of tags.
 			$add= ref $add eq 'CODE'? $add
 				: ref $add eq 'SCALAR'? $$add
-				: _croak("Tag must expand to an array, code, or a method name ref (not $add)");
+				: $croak->("Tag must expand to an array, code, or a method name ref (not $add)");
 			$add= $self->$add($self->{generator_arg});
-			ref $add eq 'ARRAY' or _croak("Tag generator must return an arrayref");
+			ref $add eq 'ARRAY' or $croak->("Tag generator must return an arrayref");
 			++$dynamic;
 		}
 		# If first element of the list is undef it means this class wanted to reset the tag.
@@ -478,7 +479,7 @@ sub _exporter_is_excluded {
 		elsif (ref $filter eq 'CODE') {
 			&$filter && return 1 for $symbol;
 		}
-		else { _croak("Unhandled 'not' filter: $filter") }
+		else { $croak->("Unhandled 'not' filter: $filter") }
 	}
 	return;
 }
@@ -490,7 +491,7 @@ sub exporter_autoload_tag {
 
 sub exporter_also_import {
 	my $self= shift;
-	ref $self && $self->{todo} or _croak('exporter_also_import can only be called on $self during an import()');
+	ref $self && $self->{todo} or $croak->('exporter_also_import can only be called on $self during an import()');
 	push @{$self->{todo}}, @_;
 }
 
@@ -512,14 +513,14 @@ sub _exporter_get_coderef_name {
 	# Sub::Identify has an XS version that we take advantage of if available
 	my $impl= (eval 'require Sub::Identify;1')? sub {
 			&Sub::Identify::sub_name
-				or _croak("Can't determine export name of $_[0]");
+				or $croak->("Can't determine export name of $_[0]");
 		}
 		: do {
 			require B;
 			sub {
 				my $cv= &B::svref_2object;
 				$cv->isa('B::CV') && !$cv->GV->isa('B::SPECIAL') && $cv->GV->NAME
-					or _croak("Can't determine export name of $_[0]");
+					or $croak->("Can't determine export name of $_[0]");
 			};
 		};
 	no warnings 'redefine';
@@ -531,7 +532,7 @@ sub _exporter_get_ref_to_package_var {
 	my ($class, $sigil, $name)= @_;
 	unless (defined $name) {
 		($sigil, $name)= ($_[1] =~ /^([\$\@\%\*\&]?)(\w+)$/)
-			or _croak("'$_[1]' is not an allowed variable name");
+			or $croak->("'$_[1]' is not an allowed variable name");
 	}
 	my $reftype= $sigil_to_reftype{$sigil};
 	no strict 'refs';
@@ -569,7 +570,7 @@ sub _exporter_process_attribute {
 				push @export_names, $export_name;
 			}
 			else {
-				_croak("Invalid export notation '$token'");
+				$croak->("Invalid export notation '$token'");
 			}
 		}
 		if (!@export_names) { # if list was empty or only tags...
@@ -602,7 +603,7 @@ sub exporter_setup {
 		*{$self->{into}.'::export'}= \&_exporter_export_from_caller;
 	}
 	elsif ($version) {
-		_croak("Unknown export API version $version");
+		$croak->("Unknown export API version $version");
 	}
 }
 
@@ -615,12 +616,12 @@ sub exporter_export {
 	for (my $i= 0; $i < @_;) {
 		my ($is_gen, $sigil, $name, $args, $ref);
 		my $export= $_[$i++];
-		ref $export and _croak("Expected non-ref export name at argument $i");
+		ref $export and $croak->("Expected non-ref export name at argument $i");
 		# If they provided the ref, capture it from arg list.
 		$ref= $_[$i++] if ref $_[$i];
 		# Common case first - ordinary functions
 		if ($export =~ /^\w+$/) {
-			$ref ||= $class->can($export) or _croak("Export '$export' not found in $class");
+			$ref ||= $class->can($export) or $croak->("Export '$export' not found in $class");
 			no strict 'refs';
 			${$class.'::EXPORT'}{$export}= $ref;
 		}
@@ -635,16 +636,16 @@ sub exporter_export {
 					$ref= \\$gen;  # REF REF to method name
 					last;
 				}
-				$ref or _croak("Export '$export' not found in package $class, nor a generator $sigil_to_generator_prefix{$sigil}[0]");
+				$ref or $croak->("Export '$export' not found in package $class, nor a generator $sigil_to_generator_prefix{$sigil}[0]");
 			}
 			elsif ($is_gen) {
-				ref $ref eq 'CODE' or _croak("Export '$export' should be followed by a generator coderef");
+				ref $ref eq 'CODE' or $croak->("Export '$export' should be followed by a generator coderef");
 				my $coderef= $ref;
 				$ref= \$coderef; # REF to coderef
 			}
 			else {
 				ref $ref eq $sigil_to_reftype{$sigil} or (ref $ref eq 'REF' && $sigil eq '$')
-					or _croak("'$export' should be $sigil_to_reftype{$sigil} but you supplied ".ref($ref));
+					or $croak->("'$export' should be $sigil_to_reftype{$sigil} but you supplied ".ref($ref));
 			}
 			no strict 'refs';
 			${$class.'::EXPORT'}{$sigil.$name}= $ref;
@@ -654,7 +655,7 @@ sub exporter_export {
 			if ($is_gen && !$ref) {
 				my $gen= $sigil_to_generator_prefix{':'}.$name;
 				$class->can($gen)
-					or _croak("Can't find generator for tag $name : '$gen'");
+					or $croak->("Can't find generator for tag $name : '$gen'");
 				$ref= $gen;
 			}
 			ref $ref eq 'ARRAY'? $class->exporter_register_tag_members($name, @$ref)
@@ -664,16 +665,16 @@ sub exporter_export {
 		elsif (($name, $args)= ($export =~ /^-(\w+)(?:\(([0-9]+|\*|\?)\))?$/)) {
 			if ($ref) {
 				ref $ref eq 'CODE' or (ref $ref eq 'SCALAR' and $class->can($ref= $$ref))
-					or _croak("Option '$export' must be followed by coderef or method name as scalar ref");
+					or $croak->("Option '$export' must be followed by coderef or method name as scalar ref");
 			} else {
 				$class->can($name)
-					or _croak("Option '$export' defaults to a method '$name' which does not exist on $class");
+					or $croak->("Option '$export' defaults to a method '$name' which does not exist on $class");
 				$ref= $name;
 			}
 			$class->exporter_register_option($name, $ref, $args);
 		}
 		else {
-			_croak("'$export' is not a valid export syntax");
+			$croak->("'$export' is not a valid export syntax");
 		}
 	}
 }
