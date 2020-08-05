@@ -1,13 +1,14 @@
 package Exporter::Extensible;
 use v5;
-use strict;
-use warnings;
+use strict; no strict 'refs';
+use warnings; no warnings 'redefine';
 require Exporter::Extensible::Compat if "$]" < "5.012";
 require mro;
 
 # ABSTRACT: Create easy-to-extend modules which export symbols
 # VERSION
 
+our %EXPORT_FAST_SUB_CACHE;
 our %EXPORT_PKG_CACHE;
 our %EXPORT_TAGS_PKG_CACHE;
 
@@ -51,13 +52,35 @@ sub import {
 	$self= bless { into => scalar caller }, $self
 		unless ref $self;
 	# Optional config hash might be given as first argument
-	$self= $self->exporter_apply_global_config(shift)
+	$self->exporter_apply_global_config(shift)
 		if ref $_[0] eq 'HASH';
-	
-	my $def;
-	my @todo= @_? @_
-		: ($def= $self->exporter_get_tag('default'))? @$def
-		: return 1;
+	my $class= ref $self;
+	my @todo= @_? @_ : @{ $self->exporter_get_tag('default') || [] };
+	return 1 unless @todo;
+	# If only installing subs without generators or unusual options, use a more direct code path.
+	# This only takes effect the second time a symbol is requested, since the cache is not pre-populated.
+	# (abuse a while loop as a if/goto construct)
+	fast: while (!$self->{_complex} && !grep ref, @todo) {
+		my $fastsub= $EXPORT_FAST_SUB_CACHE{$class} || last; # nothing to optimize if isn't cached
+		my $prefix= $self->{into}.'::';
+		my $replace= $self->{replace} || 'carp';
+		if ($replace eq 'carp') {
+			use warnings 'redefine';
+			local $SIG{__WARN__}= sub { *{$prefix.$_}{CODE} == $fastsub->{$_} or $carp->($_[0]) };
+			ord == 58 || (*{$prefix.$_}= ($fastsub->{$_} || last fast))
+				for @todo;
+		}
+		elsif ($replace eq 1) {
+			ord == 58 || (*{$prefix.$_}= ($fastsub->{$_} || last fast))
+				for @todo;
+		}
+		else { last } # replace==croak and replace==skip require more logic
+		# Now apply any tags that were requested.  Each will get its own determination of whether it
+		# can use the 'fast' method.
+		ord == 58 && $self->import(@{$self->exporter_get_tag(substr $_, 1)})
+			for @todo;
+		return 1;
+	}
 	my $install= $self->_exporter_build_install_set(\@todo);
 
 	# Install might actually be uninstall.  It also might be overridden by the user.
@@ -92,7 +115,6 @@ sub _exporter_build_install_set {
 	$self->{todo}= $todo;
 	my $install= $self->{install_set} ||= {};
 	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
-	my $not= $self->{not};
 	while (@$todo) {
 		my $symbol= shift @$todo;
 		my ($sigil, $name)= ($symbol =~ /^([-:\$\@\%\*]?)(.*)/); # should always match
@@ -149,10 +171,12 @@ sub _exporter_build_install_set {
 			# If followed by a hashref, add those options to the current ones.
 			$self2= $self->exporter_apply_inline_config(shift @$todo)
 				if ref $todo->[0] eq 'HASH';
-			next if defined $not and $self->_exporter_is_excluded($symbol);
-			no warnings 'uninitialized';
-			my $dest= delete $self2->{as} || $self2->{prefix} . $name . $self2->{suffix};
-			use warnings 'uninitialized';
+			my $dest= $name;
+			if ($self2->{_name_mangle}) {
+				$dest= delete $self2->{as} || ($self2->{prefix}||'') . $name . ($self2->{suffix}||'');
+				next if defined $self2->{not} and $self2->_exporter_is_excluded($symbol);
+				delete $self2->{_name_mangle} unless defined $self2->{prefix} || defined $self2->{suffix} || defined $self2->{not};
+			}
 			# If $ref is a generator (ref-ref) then run it, unless it was already run for the
 			# current symbol exporting to the current dest.
 			if (ref $ref eq 'REF') {
@@ -173,7 +197,6 @@ sub _exporter_build_install_set {
 			if ($install->{$dest}) {
 				if ($install->{$dest} != $ref) { # most common case of duplicate export, ignore it.
 					if (ref $ref eq 'GLOB' || ref $install->{$dest} eq 'GLOB') {
-						no strict 'refs';
 						# globrefs will never be equal - compare the glob itself.
 						ref $ref eq 'GLOB' && ref $install->{dest} eq 'GLOB' && *{$install->{$dest}} eq *$ref
 							# can't install an entire glob at the same time as a piece of a glob.
@@ -214,7 +237,6 @@ sub exporter_install {
 	my $into= $self->{into} or $croak->("'into' must be defined before exporter_install");
 	return $self->_exporter_install_to_ref(@_) if ref $into;
 	my $replace= $self->{replace} || 'warn';
-	no strict 'refs';
 	my $stash= \%{$into.'::'};
 	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
 	for (my $i= 0; $i < @$list; $i+= 2) {
@@ -235,7 +257,6 @@ sub exporter_install {
 					: $croak->("Refusing to overwrite '$name' with $ref from ".ref($self));
 			}
 		}
-		no warnings 'redefine';
 		*$pkg_dest= $ref;
 	}
 }
@@ -244,14 +265,12 @@ sub exporter_uninstall {
 	my $self= shift;
 	my $into= $self->{into} or $croak->("'into' must be defined before exporter_uninstall");
 	return $self->_exporter_install_to_ref(@_) if ref $into;
-	no strict 'refs';
 	my $stash= \%{$into.'::'};
 	my $list= @_ == 1 && ref $_[0] eq 'ARRAY'? $_[0] : \@_;
 	for (my $i= 0; $i < @$list; $i+= 2) {
 		my ($name, $ref)= @{$list}[$i..1+$i];
 		# Each value is either a hashref with keys matching the parts of a typeglob,
 		# or it is a single ref that can be assigned directly to the typeglob.
-		no strict 'refs';
 		if (ref $ref eq 'GLOB') {
 			# If the value we installed is no longer there, do nothing
 			next unless *$ref eq ($stash->{$name}||'');
@@ -292,14 +311,30 @@ sub _exporter_install_to_ref {
 	}
 }
 
-sub exporter_config_into      { $_[0]{into}=      $_[1] if @_ > 1; $_[0]{into};      }
-sub exporter_config_prefix    { $_[0]{prefix}=    $_[1] if @_ > 1; $_[0]{prefix};    }
-sub exporter_config_suffix    { $_[0]{suffix}=    $_[1] if @_ > 1; $_[0]{suffix};    }
-sub exporter_config_as        { $_[0]{as}=        $_[1] if @_ > 1; $_[0]{as};        }
-sub exporter_config_no        { $_[0]{no}=        $_[1] if @_ > 1; $_[0]{no};        }
-sub exporter_config_scope     { $_[0]{scope}=     $_[1] if @_ > 1; $_[0]{scope};     }
-sub exporter_config_not       { $_[0]{not}=       $_[1] if @_ > 1; $_[0]{not};       }
-sub exporter_config_installer { $_[0]{installer}= $_[1] if @_ > 1; $_[0]{installer}; }
+sub exporter_config_prefix    { $_[0]->_exporter_set_attr(prefix => $_[1]) if @_ > 1; $_[0]{prefix} }
+sub exporter_config_suffix    { $_[0]->_exporter_set_attr(suffix => $_[1]) if @_ > 1; $_[0]{suffix} }
+sub exporter_config_as        { $_[0]->_exporter_set_attr(as     => $_[1]) if @_ > 1; $_[0]{as} }
+sub exporter_config_no        { $_[0]->_exporter_set_attr(no     => $_[1]) if @_ > 1; $_[0]{no} }
+sub exporter_config_into      { $_[0]->_exporter_set_attr(into   => $_[1]) if @_ > 1; $_[0]{into} }
+sub exporter_config_scope     { $_[0]->_exporter_set_attr(scope  => $_[1]) if @_ > 1; $_[0]{scope};     }
+sub exporter_config_not       { $_[0]->_exporter_set_attr(not    => $_[1]) if @_ > 1; $_[0]{not};       }
+sub exporter_config_installer { $_[0]->_exporter_set_attr(installer => $_[1]) if @_ > 1; $_[0]{installer}; }
+
+sub _exporter_set_attr {
+	my ($self, $name, $val)= @_;
+	$self->{$name}= $val;
+	# After changing config, update the optimization flags.
+	# _name_mangle is set if there is any deviation from normal installation of the symbol name
+	$self->{_name_mangle}= defined $self->{not}
+		|| defined $self->{as}
+		|| (defined $self->{prefix} && length $self->{prefix})
+		|| (defined $self->{suffix} && length $self->{suffix});
+	# _complex is set if the required algorithm is anything more than a simple *{$into.'::'.$name}= $ref
+	# but 'replace' does not trigger _complex currently because I handled that in the fast installer.
+	$self->{_complex}= $self->{no} || $self->{_name_mangle}
+		|| defined $self->{scope}
+		|| $self->{installer} || ref $self->{into};
+}
 
 our %replace_aliases= (
 	1     => 1,
@@ -368,7 +403,6 @@ sub exporter_register_symbol {
 	$class= ref($class)||$class;
 	$ref ||= $class->_exporter_get_ref_to_package_var($export_name)
 		or $croak->("Symbol $export_name not found in package $class");
-	no strict 'refs';
 	${$class.'::EXPORT'}{$export_name}= $ref;
 }
 
@@ -381,29 +415,32 @@ sub exporter_get_inherited {
 	my ($self, $sym)= @_;
 	my $class= ref($self)||$self;
 	# Make the common case fast.
-	return $EXPORT_PKG_CACHE{$class}{$sym}
-		if exists $EXPORT_PKG_CACHE{$class}{$sym};
-	# search package hierarchy
-	no strict 'refs';
-	for (@{ mro::get_linear_isa($class) }) {
-		return $EXPORT_PKG_CACHE{$class}{$sym}= ${$_.'::EXPORT'}{$sym}
-			if exists ${$_.'::EXPORT'}{$sym};
-	}
-	# Isn't exported, but maybe autoload.
-	return $self->exporter_autoload_symbol($sym);
+	return $EXPORT_PKG_CACHE{$class}{$sym} ||=
+		do {
+			my $x;
+			# quick check of own package first
+			unless ($x= ${$class.'::EXPORT'}{$sym}) {
+				# search package hierarchy
+				($x= ${$_.'::EXPORT'}{$sym}) && last for @{ mro::get_linear_isa($class) }
+			}
+			# If it is a plain sub, it is elligible for "fast export"
+			$EXPORT_FAST_SUB_CACHE{$class}{$sym}= $x if ref $x eq 'CODE' and $sym =~ /^\w/;
+			#print "# ref=".ref($x)." sym=$sym\n";
+			$x;
+		}
+		# Isn't exported, but maybe autoload.
+		|| $self->exporter_autoload_symbol($sym);
 }
 
 sub exporter_register_option {
 	my ($class, $option_name, $method_name, $arg_count)= @_;
 	$class= ref($class)||$class;
-	no strict 'refs';
 	${$class.'::EXPORT'}{'-'.$option_name}= [ $method_name, $arg_count||0 ];
 }
 
 sub exporter_register_generator {
 	my ($class, $export_name, $method_name)= @_;
 	$class= ref($class)||$class;
-	no strict 'refs';
 	if ($export_name =~ /^:/) {
 		(${$class.'::EXPORT_TAGS'}{substr($export_name,1)} ||= $method_name) eq $method_name
 			or $croak->("Cannot set generator for $export_name when that tag is already populated within this class ($class)");
@@ -416,7 +453,6 @@ sub exporter_register_generator {
 sub exporter_register_tag_members {
 	my ($class, $tag_name)= (shift, shift);
 	$class= ref($class)||$class;
-	no strict 'refs';
 	push @{ ${$class.'::EXPORT_TAGS'}{$tag_name} }, @_;
 }
 
@@ -426,7 +462,6 @@ sub _exporter_build_tag_cache {
 	# Collect all members of this tag from any parent class, but stop at the first undef
 	my ($dynamic, @keep, %seen, $known);
 	for (@{ mro::get_linear_isa($class) }) {
-		no strict 'refs';
 		my $add= ${$_.'::EXPORT_TAGS'}{$tagname}
 			# Special case, ':all' is built from all known keys of the %EXPORT var at each inherited package
 			# Also exclude anything exported as part of the Exporter API, but right now that is only
@@ -455,8 +490,7 @@ sub _exporter_build_tag_cache {
 		last if $start;
 	}
 	my $ret= $known? \@keep : $self->exporter_autoload_tag($tagname);
-	$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $ret
-		unless $dynamic;
+	$EXPORT_TAGS_PKG_CACHE{$class}{$tagname}= $ret unless $dynamic;
 	return $ret;
 }
 
@@ -529,7 +563,6 @@ sub _exporter_get_coderef_name {
 					or $croak->("Can't determine export name of $_[0]");
 			};
 		};
-	no warnings 'redefine';
 	*_exporter_get_coderef_name= $impl;
 	$impl->(shift);
 }
@@ -541,7 +574,6 @@ sub _exporter_get_ref_to_package_var {
 			or $croak->("'$_[1]' is not an allowed variable name");
 	}
 	my $reftype= $sigil_to_reftype{$sigil};
-	no strict 'refs';
 	return undef unless ${$class.'::'}{$name};
 	return $reftype eq 'GLOB'? \*{$class.'::'.$name} : *{$class.'::'.$name}{$reftype};
 }
@@ -557,7 +589,6 @@ sub _exporter_process_attribute {
 			}
 			elsif ($token =~ /^\w+$/) {
 				push @export_names, $token;
-				no strict 'refs';
 				${$class.'::EXPORT'}{$token}= $coderef;
 			}
 			elsif ($token =~ /^-(\w*)(?:\(([0-9]+|\*)\))?$/) {
@@ -581,7 +612,6 @@ sub _exporter_process_attribute {
 		}
 		if (!@export_names) { # if list was empty or only tags...
 			push @export_names, _exporter_get_coderef_name($coderef);
-			no strict 'refs';
 			${$class.'::EXPORT'}{$export_names[-1]}= $coderef;
 		}
 		$class->exporter_register_tag_members($_, @export_names) for keys %tags;
@@ -592,7 +622,6 @@ sub _exporter_process_attribute {
 
 sub exporter_setup {
 	my ($self, $version)= @_;
-	no strict 'refs';
 	push @{$self->{into}.'::ISA'}, ref($self);
 	strict->import;
 	warnings->import;
@@ -628,7 +657,6 @@ sub exporter_export {
 		# Common case first - ordinary functions
 		if ($export =~ /^\w+$/) {
 			$ref ||= $class->can($export) or $croak->("Export '$export' not found in $class");
-			no strict 'refs';
 			${$class.'::EXPORT'}{$export}= $ref;
 		}
 		# Next, check for generators or variables with sigils
@@ -653,7 +681,6 @@ sub exporter_export {
 				ref $ref eq $sigil_to_reftype{$sigil} or (ref $ref eq 'REF' && $sigil eq '$')
 					or $croak->("'$export' should be $sigil_to_reftype{$sigil} but you supplied ".ref($ref));
 			}
-			no strict 'refs';
 			${$class.'::EXPORT'}{$sigil.$name}= $ref;
 		}
 		# Tags ":foo"
