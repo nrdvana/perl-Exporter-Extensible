@@ -40,11 +40,15 @@ our %sigil_to_generator_prefix= (
 	'&' => [ '_generate_', '_generateCODE_', '_generateCode' ],
 );
 $sigil_to_generator_prefix{''}= $sigil_to_generator_prefix{'&'};
+our %ord_is_sigil= ( ord '$', 1, ord '@', 1, ord '%', 1, ord '*', 1, ord '&', 1, ord '-', 1, ord ':', 1 );
+our %ord_is_directive= ( ord '-', 1, ord ':', 1 );
 
-my ($carp, $croak, $weaken);
+my ($carp, $croak, $weaken, $colon, $hyphen);
 $carp=   sub { require Carp; $carp= \&Carp::carp; goto $carp; };
 $croak=  sub { require Carp; $croak= \&Carp::croak; goto $croak; };
 $weaken= sub { require Scalar::Util; $weaken= \&Scalar::Util::weaken; goto $weaken; };
+$colon= ord ':';
+$hyphen= ord '-';
 
 sub import {
 	my $self= shift;
@@ -61,23 +65,25 @@ sub import {
 	# This only takes effect the second time a symbol is requested, since the cache is not pre-populated.
 	# (abuse a while loop as a if/goto construct)
 	fast: while (!$self->{_complex} && !grep ref, @todo) {
-		my $fastsub= $EXPORT_FAST_SUB_CACHE{$class} || last; # nothing to optimize if isn't cached
-		my $prefix= $self->{into}.'::';
+		my $fastsub= $EXPORT_FAST_SUB_CACHE{$class} || last; # can't optimize if no cache is built
+		my $prefix= $self->{into}.'::'; # {into} can be a hashref, but not when {_complex} is false
 		my $replace= $self->{replace} || 'carp';
 		if ($replace eq 'carp') {
+			# Use perl's own warning system to detect attempts to overwrite the GLOB.  Only warn if the
+			# new reference isn't the same as existing.
 			use warnings 'redefine';
 			local $SIG{__WARN__}= sub { *{$prefix.$_}{CODE} == $fastsub->{$_} or $carp->($_[0]) };
-			ord == 58 || (*{$prefix.$_}= ($fastsub->{$_} || last fast))
+			ord == $colon || (*{$prefix.$_}= ($fastsub->{$_} || last fast))
 				for @todo;
 		}
 		elsif ($replace eq 1) {
-			ord == 58 || (*{$prefix.$_}= ($fastsub->{$_} || last fast))
+			ord == $colon || (*{$prefix.$_}= ($fastsub->{$_} || last fast))
 				for @todo;
 		}
 		else { last } # replace==croak and replace==skip require more logic
 		# Now apply any tags that were requested.  Each will get its own determination of whether it
 		# can use the 'fast' method.
-		ord == 58 && $self->import(@{$self->exporter_get_tag(substr $_, 1)})
+		ord == $colon && $self->import(@{$self->exporter_get_tag(substr $_, 1)})
 			for @todo;
 		return 1;
 	}
@@ -117,10 +123,10 @@ sub _exporter_build_install_set {
 	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
 	while (@$todo) {
 		my $symbol= shift @$todo;
-		my ($sigil, $name)= ($symbol =~ /^([-:\$\@\%\*]?)(.*)/); # should always match
 		
 		# If it is a tag, then recursively call import on that list
-		if ($sigil eq ':') {
+		if (ord $symbol == $colon) {
+			my $name= substr $symbol, 1;
 			my $tag_cache= $self->exporter_get_tag($name)
 				or $croak->("Tag ':$name' is not exported by ".ref($self));
 			# If first element of tag is a hashref, they count as nested global options.
@@ -146,7 +152,7 @@ sub _exporter_build_install_set {
 			or $croak->("'$symbol' is not exported by ".ref($self));
 		
 		# If it starts with '-', it is an option, and might consume additional args
-		if ($sigil eq '-') {
+		if (ord $symbol == $hyphen) {
 			my ($method, $count)= @$ref;
 			if ($count eq '*') {
 				my $consumed= $self->$method(@$todo);
@@ -167,20 +173,21 @@ sub _exporter_build_install_set {
 			}
 		}
 		else {
+			my ($sigil, $name)= $ord_is_sigil{ord $symbol}? ( substr($symbol,0,1), substr($symbol,1) ) : ( '', $symbol );
 			my $self2= $self;
 			# If followed by a hashref, add those options to the current ones.
 			$self2= $self->exporter_apply_inline_config(shift @$todo)
 				if ref $todo->[0] eq 'HASH';
-			my $dest= $name;
 			if ($self2->{_name_mangle}) {
-				$dest= delete $self2->{as} || ($self2->{prefix}||'') . $name . ($self2->{suffix}||'');
 				next if defined $self2->{not} and $self2->_exporter_is_excluded($symbol);
+				$name= delete $self2->{as} || ($self2->{prefix}||'') . $name . ($self2->{suffix}||'');
+				# If 'as' was the only reason for _name_mangle, then disable it to return to fast-path
 				delete $self2->{_name_mangle} unless defined $self2->{prefix} || defined $self2->{suffix} || defined $self2->{not};
 			}
 			# If $ref is a generator (ref-ref) then run it, unless it was already run for the
 			# current symbol exporting to the current dest.
 			if (ref $ref eq 'REF') {
-				$ref= $self2->{_generator_cache}{$symbol.";".$dest} ||= do {
+				$ref= $self2->{_generator_cache}{$symbol.";".$name} ||= do {
 					# Run the generator.
 					my $method= $$ref;
 					$method= $$method unless ref $method eq 'CODE';
@@ -194,28 +201,28 @@ sub _exporter_build_install_set {
 			# Check for collisions.  Unlikely scenario in typical usage, but could occur if two
 			# tags include the same symbol, or if user adds a prefix or suffix that collides
 			# with another exported name.
-			if ($install->{$dest}) {
-				if ($install->{$dest} != $ref) { # most common case of duplicate export, ignore it.
-					if (ref $ref eq 'GLOB' || ref $install->{$dest} eq 'GLOB') {
+			if ($install->{$name}) {
+				if ($install->{$name} != $ref) { # most common case of duplicate export, ignore it.
+					if (ref $ref eq 'GLOB' || ref $install->{$name} eq 'GLOB') {
 						# globrefs will never be equal - compare the glob itself.
-						ref $ref eq 'GLOB' && ref $install->{dest} eq 'GLOB' && *{$install->{$dest}} eq *$ref
+						ref $ref eq 'GLOB' && ref $install->{dest} eq 'GLOB' && *{$install->{$name}} eq *$ref
 							# can't install an entire glob at the same time as a piece of a glob.
-							or $croak->("Can't install ".ref($ref)." and ".$install->{dest}." into the same symbol '".$dest."'");
+							or $croak->("Can't install ".ref($ref)." and ".$install->{dest}." into the same symbol '".$name."'");
 					}
 					# Upgrade this item to a hashref of reftype if it wasn't already  (hashrefs are always stored this way)
-					$install->{$dest}= { ref($install->{$dest}) => $install->{$dest} }
-						unless ref $install->{$dest} eq 'HASH';
+					$install->{$name}= { ref($install->{$name}) => $install->{$name} }
+						unless ref $install->{$name} eq 'HASH';
 					# Assign this new ref into a slot of that hash, unless something different was already there
-					($install->{$dest}{ref $ref} ||= $ref) == $ref
-						or $croak->("Trying to import conflicting ".ref($ref)." values for '".$dest."'");
+					($install->{$name}{ref $ref} ||= $ref) == $ref
+						or $croak->("Trying to import conflicting ".ref($ref)." values for '".$name."'");
 				}
 			}
-			# Only make install->{$dest} a hashref if we really have to, for performance.
+			# Only make install->{$name} a hashref if we really have to, for performance.
 			elsif (ref $ref eq 'HASH') {
-				$install->{$dest}{HASH}= $ref;
+				$install->{$name}{HASH}= $ref;
 			}
 			else {
-				$install->{$dest}= $ref;
+				$install->{$name}= $ref;
 			}
 		}
 	}
@@ -364,7 +371,7 @@ sub exporter_apply_global_config {
 
 sub exporter_apply_inline_config {
 	my ($self, $conf)= @_;
-	my @for_global_config= grep /^-/, keys %$conf;
+	my @for_global_config= grep ord == $hyphen, keys %$conf;
 	# In the event that only "-as" was given, we don't actually need to create a new object
 	if (@for_global_config == 1 && $for_global_config[0] eq '-as' && keys %$conf == 1) {
 		$self->exporter_config_as($conf->{-as});
@@ -424,7 +431,7 @@ sub exporter_get_inherited {
 				($x= ${$_.'::EXPORT'}{$sym}) && last for @{ mro::get_linear_isa($class) }
 			}
 			# If it is a plain sub, it is elligible for "fast export"
-			$EXPORT_FAST_SUB_CACHE{$class}{$sym}= $x if ref $x eq 'CODE' and $sym =~ /^\w/;
+			$EXPORT_FAST_SUB_CACHE{$class}{$sym}= $x if ref $x eq 'CODE' and !$ord_is_sigil{ord $sym};
 			#print "# ref=".ref($x)." sym=$sym\n";
 			$x;
 		}
@@ -441,7 +448,7 @@ sub exporter_register_option {
 sub exporter_register_generator {
 	my ($class, $export_name, $method_name)= @_;
 	$class= ref($class)||$class;
-	if ($export_name =~ /^:/) {
+	if (ord $export_name == $colon) {
 		(${$class.'::EXPORT_TAGS'}{substr($export_name,1)} ||= $method_name) eq $method_name
 			or $croak->("Cannot set generator for $export_name when that tag is already populated within this class ($class)");
 	} else {
@@ -466,8 +473,8 @@ sub _exporter_build_tag_cache {
 			# Special case, ':all' is built from all known keys of the %EXPORT var at each inherited package
 			# Also exclude anything exported as part of the Exporter API, but right now that is only
 			# the '-exporter_setup' option.
-			|| ($tagname eq 'all' && *{$_.'::EXPORT'}{HASH}
-				&& [ grep $_ =~ /^[^-:]/, keys %{$_.'::EXPORT'} ]
+			|| ($tagname eq 'all' && defined *{$_.'::EXPORT'}{HASH}
+				&& [ grep !$ord_is_directive{+ord}, keys %{$_.'::EXPORT'} ]
 			)
 			or next;
 		++$known;
