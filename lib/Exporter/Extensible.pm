@@ -799,8 +799,10 @@ Because nobody likes big dependency trees.
 
 =item Speed
 
-I haven't benchmarked this yet, but I approached it with a mindset of "make the common case
-fast".  The features are written so you only pay for what you use.
+The features are written so you only pay for what you use, with emphasis on "make the common
+case fast".  Benchmarking is difficult since there are so many patterns to compare, but in
+general, this module is significantly faster than Sub::Exporter, faster than Exporter::Tiny for
+medium or large export workload, and even beats Exporter itself for large sets of exported subs.
 
 =back
 
