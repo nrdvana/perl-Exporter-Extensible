@@ -3,6 +3,8 @@ use strict;
 use warnings;
 require MRO::Compat if "$]" < '5.009005';
 
+# ABSTRACT: 5.8 and 5.10 compatibiliy for Exporter::Extensible
+
 =head1 DESCRIPTION
 
 This module provides a compatibility layer for perl 5.10 and 5.8.
