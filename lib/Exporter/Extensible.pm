@@ -875,9 +875,8 @@ its L</import_into> method.
 
 This is the method that gets called when you C<use DerivedModule @list>.
 
-The user-facing API is mostly the same as L<Sub::Exporter> or L<Exporter::Tiny>, except that C<-foo>
-is not a group and there are no "collections" (though you could implement collections using
-options).
+The user-facing API is mostly the same as L<Sub::Exporter> or L<Exporter::Tiny>, except that C<-tag>
+is not an alias for C<:tag>.
 
 The elements of C<@list> are handled according to the following patterns:
 
@@ -910,7 +909,7 @@ Package name or hashref to which all symbols will be exported.  Defaults to C<ca
 
 Empty scalar-ref whose scope determines when to unimport the things just imported.
 After a successful import, this will be assigned a scope-guard object whose destructor
-un-imports those same symbols.  This saves you the hassle of calling "no MyModule @args".
+un-imports those same symbols.  This saves you the hassle of calling C<< no MyModule @args >>.
 You can also call C<< $scope->clean >> to trigger the unimport in a more direct manner.
 If you need the methods cleaned out at the end of compilation (i.e. before execution)
 you can wrap C<clean> in a C<BEGIN> block.
@@ -922,6 +921,10 @@ you can wrap C<clean> in a C<BEGIN> block.
 	# you could "BEGIN { $scope->clean }" if you want them removed sooner
   }
   # All those symbols are now neatly removed from your package
+
+This also works well when combined with C<< use B::Hooks::EndOfScope 'on_scope_end' >>.
+(I would have added a stronger integration with B::Hooks::EndOfScope but I didn't want to
+depend on an XS module)
 
 =item not
 
