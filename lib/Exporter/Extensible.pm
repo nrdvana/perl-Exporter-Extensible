@@ -123,7 +123,7 @@ sub _exporter_build_install_set {
 	my $inventory= $EXPORT_PKG_CACHE{ref $self} ||= {};
 	while (@$todo) {
 		my $symbol= shift @$todo;
-		
+
 		# If it is a tag, then recursively call import on that list
 		if (ord $symbol == $colon) {
 			my $name= substr $symbol, 1;
@@ -150,7 +150,7 @@ sub _exporter_build_install_set {
 		# Check current package cache first, else do the full lookup.
 		my $ref= (exists $inventory->{$symbol}? $inventory->{$symbol} : $self->exporter_get_inherited($symbol))
 			or $croak->("'$symbol' is not exported by ".ref($self));
-		
+
 		# If it starts with '-', it is an option, and might consume additional args
 		if (ord $symbol == $hyphen) {
 			# back-compat for when opt was arrayref
@@ -619,7 +619,7 @@ sub _exporter_process_attribute {
 				push @export_names, $token;
 				${$class.'::EXPORT'}{$token}= $coderef;
 			}
-			elsif ($token =~ /^-(\w*)(?:\(([0-9]+|\*)\))?$/) {
+			elsif ($token =~ /^-(\w*)(?:\(([0-9]+|\*|\?)\))?$/) {
 				$subname ||= _exporter_get_coderef_name($coderef);
 				push @export_names, length $1? $token : "-$subname";
 				$class->exporter_register_option(substr($export_names[-1],1), $subname, $2);
@@ -756,11 +756,11 @@ Define a module with exports
 
   package My::Utils;
   use Exporter::Extensible -exporter_setup => 1;
-  
+
   export(qw( foo $x @STUFF -strict_and_warnings ), ':baz' => ['foo'] );
-  
+
   sub foo { ... }
-  
+
   sub strict_and_warnings {
     strict->import;
     warnings->import;
@@ -1269,20 +1269,20 @@ option decide how many arguments to consume.  So, the API is as follows:
     my $exporter= shift;
     ...
   }
-  
+
   # Ask for three arguments (regardless of whether they are refs)
   sub name : Export( -name(3) ) {
     my ($exporter, $arg1, $arg2, $arg3)= @_;
     ...
   }
-  
+
   # Ask for one argument but only if it is a ref of some kind.
   # If it is a hashref, this also processes import options like -prefix, -replace, etc.
   sub name : Export( -name(?) ) {
     my ($exporter, $maybe_arg)= @_;
     ...
   }
-  
+
   # Might need any number of arguments.  Return the number we consumed.
   sub name : Export( -name(*) ) {
     my $exporter = shift;
@@ -1332,7 +1332,7 @@ generator can retrieve the values from there.
     '-bar(1)' => sub { $_[0]{bar}= $_[1] },
     '=foobar' => sub { my $foobar= $_[0]{foo} . $_[0]{bar}; sub { $foobar } },
   );
-  
+
   package User;
   use MyModule qw/ -foo abc -bar def foobar -foo xyz foobar /, { -as => "x" };
   # This exports a sub as "foobar" which returns "abcdef", and a sub as "x" which
