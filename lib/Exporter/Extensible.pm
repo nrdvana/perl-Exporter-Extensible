@@ -1368,12 +1368,18 @@ members of this tag.
 
 =head1 SEE ALSO
 
-L<Exporter::Tiny>
+=over
 
-L<Sub::Exporter>
+=item L<Exporter::Almighty>
 
-L<Export::Declare>
+=item L<Exporter::Tiny>
 
-L<Badger::Exporter>
+=item L<Sub::Exporter>
+
+=item L<Export::Declare>
+
+=item L<Badger::Exporter>
+
+=back
 
 =cut
